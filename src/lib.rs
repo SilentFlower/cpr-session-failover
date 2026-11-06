@@ -4,6 +4,7 @@ pub mod audit;
 pub mod diagnostics;
 pub mod identity;
 pub mod policy;
+pub mod settings;
 
 use gateway_plugin_sdk::{ErrorCode, PluginFault};
 

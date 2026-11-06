@@ -31,18 +31,24 @@ CPR_PLUGIN_CLI=/path/to/cpr-plugin bash scripts/package.sh
 | --- | --- |
 | `identity.rs` | 读取显式逻辑会话身份，生成带 Key 作用域的协调摘要，保护原生续写 |
 | `policy.rs` | 每轮选号计时、同进程会话迁移意图协调和候选选择 |
-| `audit.rs` | 意图、实际账号及终态记录，宿主私有状态 CAS 和有限保留 |
+| `audit.rs` | 意图、实际账号及终态记录，逐条持久记录、索引分页、宿主状态 CAS 与旧历史读取 |
 | `diagnostics.rs` | 只读宿主诊断，按请求、尝试和实际账号补齐前账号证据 |
+| `settings.rs` | 当前实例的原生配置读写、版本检查与范围目录 |
 | `main.rs` | SDK 处理器组合、请求级严格绑定、取消回收、历史查询和维护 |
-| `frontend/src/api/` | 宿主桥请求封装、历史路由与响应合同校验 |
+| `frontend/src/api/` | 宿主桥请求封装、历史与设置路由的响应合同校验 |
 | `frontend/src/App.vue` | 历史筛选、分页、刷新与展开详情 |
+| `frontend/src/components/SettingsPanel.vue` | 参数和阶段规则编辑、原生目录选择与配置发布后的重新加载 |
 | `frontend/src/presenter.ts` | 阶段、改绑证据及耗时的纯展示投影 |
 
-页面在宿主隔离 iframe 内运行，仅通过 `window.codexProxyPlugin.request` 读取当前实例的 `history` 路由，不使用管理 Cookie 或直接请求宿主 HTTP。页面资源、主题和尺寸由宿主加载与同步，生产包不包含模拟数据
+页面在宿主隔离 iframe 内运行，仅通过 `window.codexProxyPlugin.request` 访问当前实例的 `history`、`settings` 和 `resources` 路由，不使用管理 Cookie 或直接请求宿主 HTTP。页面资源、主题和尺寸由宿主加载与同步，生产包不包含模拟数据
 
 `pnpm --dir frontend dev` 提供源码预览，业务查询需要宿主桥。已安装插件读取包内资源，源码修改后必须重新构建、打包并切换版本
 
 宿主绑定始终归 CPR 所有。插件只记录协调意图，不维护第二份会话账号绑定；显式选号返回后，宿主复核资格、取得租约并原子改绑。插件不会直接重试模型或绕过原生续写限制
+
+历史使用每条记录的精确 CAS 与分页索引，不以条数或字节预算淘汰旧记录。索引先预约、记录再写入、索引最后提交，取消不产生索引不可达的记录。维护轮转检查未完成的预约并恢复已存在的正文，不会重放选号。旧 `audit/journal` 只读，更新其中一条记录时先复制该条到新存储，查询按 ID 合并去重
+
+`settings.rs` 只使用握手确认的当前实例、制品和清单贡献项，复用宿主 `/api/admin/plugins/instances` 与 `instances/update` 的校验、revision 和发布流程。页面不传目标实例、密钥或任意 URL，设置不另存进私有状态。参数 schema 通过精确 `patternProperties` 接受旧配置的 `historyLimit` 整数字段，运行时忽略该值，下一次保存参数时移除
 
 日志必须先持久化才能返回迁移决定。父调用取消时同步清除内存协调位置，不启动脱离父调用的回调；记录不确定时保留 `proposed` 或未知证据状态
 

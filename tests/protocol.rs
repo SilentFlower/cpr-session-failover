@@ -9,9 +9,8 @@ use std::{
     time::Duration,
 };
 
-use cpr_session_failover::fault;
 use gateway_plugin_sdk::{
-    CallContext, Frame, Handshake, Manifest, Message, Stage,
+    CallContext, ErrorCode, Frame, Handshake, Manifest, Message, PluginFault, Stage,
     client::{read_frame, write_frame},
 };
 use serde_json::{Value, json};
@@ -29,9 +28,12 @@ struct Host {
     results: HashMap<u64, (Value, Vec<u8>)>,
     next: HashMap<u64, (u64, Value)>,
     cancelled: HashSet<u64>,
-    state: Option<Value>,
+    state: HashMap<(String, String), (Value, u64)>,
+    conflict_puts: usize,
     version: u64,
     fail_put: bool,
+    fail_record: bool,
+    fail_commit: bool,
     hold_put: bool,
     held_put: Vec<u64>,
     chunks: VecDeque<Vec<u8>>,
@@ -40,7 +42,7 @@ struct Host {
 }
 
 impl Host {
-    async fn start(state: Option<Value>, version: u64) -> Self {
+    async fn start(state: HashMap<(String, String), (Value, u64)>, version: u64) -> Self {
         let executable = var_os("CPR_PLUGIN_TEST_BINARY")
             .unwrap_or_else(|| OsString::from(env!("CARGO_BIN_EXE_cpr-session-failover")));
         let mut child = Command::new(executable)
@@ -58,8 +60,11 @@ impl Host {
             next: HashMap::new(),
             cancelled: HashSet::new(),
             state,
+            conflict_puts: 0,
             version,
             fail_put: false,
+            fail_record: false,
+            fail_commit: false,
             hold_put: false,
             held_put: vec![],
             chunks: VecDeque::new(),
@@ -186,76 +191,106 @@ impl Host {
                 parent_id,
                 method,
                 params,
-            } => {
-                match method.as_str() {
-                    "host.middleware.next" => {
-                        self.next.insert(self.logical_id(parent_id), (id, params));
+            } => match method.as_str() {
+                "host.middleware.next" => {
+                    self.next.insert(self.logical_id(parent_id), (id, params));
+                }
+                "host.state.get" => {
+                    let key = (
+                        params["namespace"].as_str().unwrap().to_owned(),
+                        params["key"].as_str().unwrap().to_owned(),
+                    );
+                    let record = self.state.get(&key).map(|(value, version)| json!({"value":value,"version":version,"schema_version":1}));
+                    self.respond(id, json!({"record":record}), vec![]).await;
+                }
+                "host.state.put" => {
+                    if self.hold_put {
+                        self.held_put.push(id);
+                        return;
                     }
-                    "host.state.get" => {
-                        assert_eq!(params["namespace"], "audit");
-                        let record = self.state.clone().map(|value| json!({"value":value,"version":self.version,"schema_version":1}));
-                        self.respond(id, json!({"record":record}), vec![]).await;
-                    }
-                    "host.state.put" => {
-                        if self.hold_put {
-                            self.held_put.push(id);
-                            return;
-                        }
-                        if self.fail_put {
-                            self.send(
-                                Message::Error {
-                                    id,
-                                    error: fault("测试存储不可用"),
-                                },
-                                vec![],
-                            )
-                            .await;
-                            return;
-                        }
-                        let expected = self.state.as_ref().map(|_| self.version);
-                        assert_eq!(params["expected_version"], json!(expected));
-                        self.state = Some(params["value"].clone());
-                        self.version += 1;
-                        self.respond(id, json!({"version":self.version}), vec![])
-                            .await;
-                    }
-                    "host.log" => {
-                        let text = serde_json::to_string(&params).unwrap();
-                        assert!(!text.contains("session-private-test"));
-                        assert!(!text.contains("authorization"));
-                        self.respond(id, json!({"recorded":true}), vec![]).await;
-                    }
-                    "host.services.call" => {
-                        assert_eq!(params["operation"], "usage.records.get");
-                        assert_eq!(params["input"]["id"], "req_one");
-                        self.respond(id, json!({"Ok":{"id":"req_one","data":{
-                            "client_key_ref":"key_test","provider":"openai","account_ref":"B","requested_model":"test-model","model":"test-model","protocol":"openai","operation":"generate","endpoint":"/v1/responses","client_transport":"http_sse","service_tier":null,"started_at_ms":1000,"completed_at_ms":20000,"outcome":"succeeded","tokens":{},"cost":{"kind":"unavailable"}
-                        },"billing_snapshot":null,"provider_observation":null}}), vec![]).await;
-                    }
-                    "host.http.dispatch" => {
-                        assert_eq!(params["method"], "GET");
-                        assert_eq!(
-                            params["uri"],
-                            "/api/admin/diagnostics/export?requestId=req_one"
-                        );
-                        self.chunks.push_back(diagnostic_zip());
-                        self.respond(id, json!({"status":200,"version":"HTTP/1.1","headers":[],"body":{"kind":"handle","handle":"diagnostic_body"},"response":null,"session":false}), vec![]).await;
-                    }
-                    "host.http.body_read" => {
-                        let chunk = self.chunks.pop_front();
-                        self.respond(
-                            id,
-                            json!({"eof":chunk.is_none(),"trailers":null}),
-                            chunk.unwrap_or_default(),
+                    if self.fail_put
+                        || (self.fail_record
+                            && params["key"].as_str().unwrap().starts_with("record-"))
+                        || (self.fail_commit
+                            && params["value"]["entries"]
+                                .as_array()
+                                .is_some_and(|entries| {
+                                    entries.iter().any(|entry| entry["committed"] == true)
+                                }))
+                    {
+                        self.send(
+                            Message::Error {
+                                id,
+                                error: PluginFault::new(
+                                    ErrorCode::Capacity,
+                                    "测试宿主状态配额已满",
+                                ),
+                            },
+                            vec![],
                         )
                         .await;
+                        return;
                     }
-                    "host.http.body_close" => {
-                        self.respond(id, json!({}), vec![]).await;
+                    let key = (
+                        params["namespace"].as_str().unwrap().to_owned(),
+                        params["key"].as_str().unwrap().to_owned(),
+                    );
+                    let expected = self.state.get(&key).map(|(_, version)| *version);
+                    if self.conflict_puts > 0 || params["expected_version"] != json!(expected) {
+                        self.conflict_puts = self.conflict_puts.saturating_sub(1);
+                        self.send(
+                            Message::Error {
+                                id,
+                                error: PluginFault::new(ErrorCode::Conflict, "测试并发冲突"),
+                            },
+                            vec![],
+                        )
+                        .await;
+                        return;
                     }
-                    _ => panic!("未预期的宿主回调：{method}"),
+                    let value = params["value"].clone();
+                    assert!(serde_json::to_vec(&value).unwrap().len() <= 262_144);
+                    self.version += 1;
+                    self.state.insert(key, (value, self.version));
+                    self.respond(id, json!({"version":self.version}), vec![])
+                        .await;
                 }
-            }
+                "host.log" => {
+                    let text = serde_json::to_string(&params).unwrap();
+                    assert!(!text.contains("session-private-test"));
+                    assert!(!text.contains("authorization"));
+                    self.respond(id, json!({"recorded":true}), vec![]).await;
+                }
+                "host.services.call" => {
+                    assert_eq!(params["operation"], "usage.records.get");
+                    assert_eq!(params["input"]["id"], "req_one");
+                    self.respond(id, json!({"Ok":{"id":"req_one","data":{
+                            "client_key_ref":"key_test","provider":"openai","account_ref":"B","requested_model":"test-model","model":"test-model","protocol":"openai","operation":"generate","endpoint":"/v1/responses","client_transport":"http_sse","service_tier":null,"started_at_ms":1000,"completed_at_ms":20000,"outcome":"succeeded","tokens":{},"cost":{"kind":"unavailable"}
+                        },"billing_snapshot":null,"provider_observation":null}}), vec![]).await;
+                }
+                "host.http.dispatch" => {
+                    assert_eq!(params["method"], "GET");
+                    assert_eq!(
+                        params["uri"],
+                        "/api/admin/diagnostics/export?requestId=req_one"
+                    );
+                    self.chunks.push_back(diagnostic_zip());
+                    self.respond(id, json!({"status":200,"version":"HTTP/1.1","headers":[],"body":{"kind":"handle","handle":"diagnostic_body"},"response":null,"session":false}), vec![]).await;
+                }
+                "host.http.body_read" => {
+                    let chunk = self.chunks.pop_front();
+                    self.respond(
+                        id,
+                        json!({"eof":chunk.is_none(),"trailers":null}),
+                        chunk.unwrap_or_default(),
+                    )
+                    .await;
+                }
+                "host.http.body_close" => {
+                    self.respond(id, json!({}), vec![]).await;
+                }
+                _ => panic!("未预期的宿主回调：{method}"),
+            },
             Message::Resume { id, epoch } => {
                 self.send(Message::Resumed { id, epoch }, vec![]).await
             }
@@ -288,6 +323,17 @@ impl Host {
     }
 
     async fn model(&mut self, id: u64, request: &str, attempt: bool) {
+        self.model_input(
+            id,
+            request,
+            attempt,
+            br#"{"model":"test-model","session_id":"session-private-test","input":"test"}"#
+                .to_vec(),
+        )
+        .await;
+    }
+
+    async fn model_input(&mut self, id: u64, request: &str, attempt: bool, body: Vec<u8>) {
         let settings = if attempt {
             Value::Null
         } else {
@@ -304,8 +350,7 @@ impl Host {
             "middleware.handle",
             Some(request),
             params,
-            br#"{"model":"test-model","session_id":"session-private-test","input":"test"}"#
-                .to_vec(),
+            body,
         )
         .await;
         self.wait_next(id).await;
@@ -353,6 +398,35 @@ impl Host {
         }
     }
 
+    fn record(&self, request_id: &str) -> &Value {
+        &self
+            .state
+            .iter()
+            .find(|((namespace, key), (value, _))| {
+                namespace == "history"
+                    && key.starts_with("record-")
+                    && value["record"]["requestId"] == request_id
+            })
+            .unwrap()
+            .1
+            .0["record"]
+    }
+
+    async fn history(&mut self, id: u64, query: &str) -> Value {
+        self.call(
+            id,
+            Stage::Management,
+            "management.handle",
+            None,
+            json!({"method":"GET","path":"history","query":query,"content_type":null,"headers":[]}),
+            vec![],
+        )
+        .await;
+        let (response, payload) = self.result(id).await;
+        assert_eq!(response["status"], 200);
+        serde_json::from_slice(&payload).unwrap()
+    }
+
     async fn stop(&mut self) {
         self.send(Message::Shutdown, vec![]).await;
         assert!(
@@ -382,7 +456,7 @@ fn diagnostic_zip() -> Vec<u8> {
 
 #[tokio::test]
 async fn migration_records_actual_admission_and_survives_restart() {
-    let mut host = Host::start(None, 0).await;
+    let mut host = Host::start(HashMap::new(), 0).await;
     host.call(
         1,
         Stage::Registration,
@@ -413,16 +487,10 @@ async fn migration_records_actual_admission_and_survives_restart() {
         host.schedule(22, "req_one").await,
         json!({"decision":"pick","account_id":"B"})
     );
-    assert_eq!(
-        host.state.as_ref().unwrap()["records"][0]["stage"],
-        "proposed"
-    );
+    assert_eq!(host.record("req_one")["stage"], "proposed");
     assert_eq!(host.schedule(23, "req_two").await["decision"], "delegate");
     host.model(30, "req_one", true).await;
-    assert_eq!(
-        host.state.as_ref().unwrap()["records"][0]["stage"],
-        "admitted"
-    );
+    assert_eq!(host.record("req_one")["stage"], "admitted");
     host.finish_next(30).await;
     host.finish_next(10).await;
     assert_eq!(host.schedule(24, "req_two").await["decision"], "delegate");
@@ -437,7 +505,7 @@ async fn migration_records_actual_admission_and_survives_restart() {
     )
     .await;
     host.result(50).await;
-    let record = &host.state.as_ref().unwrap()["records"][0];
+    let record = &host.record("req_one");
     assert_eq!(record["fromAccountId"], "A");
     assert_eq!(record["actualAccountId"], "B");
     assert_eq!(record["bindingChanged"], true);
@@ -484,14 +552,22 @@ async fn migration_records_actual_admission_and_survives_restart() {
 }
 
 #[tokio::test]
-async fn storage_failure_delegates_without_picking_and_releases_coordination() {
-    let mut host = Host::start(None, 0).await;
+async fn quota_exhaustion_delegates_reports_failure_and_releases_coordination() {
+    let mut host = Host::start(HashMap::new(), 0).await;
     host.model(10, "req_one", false).await;
     host.schedule(20, "req_one").await;
     sleep(Duration::from_millis(1050)).await;
     host.fail_put = true;
     assert_eq!(host.schedule(21, "req_one").await["decision"], "delegate");
-    assert!(host.state.is_none());
+    assert!(host.state.is_empty());
+    let history = host.history(25, "limit=20").await;
+    assert_eq!(history["pagination"]["total"], 0);
+    assert!(
+        history["storage"]["lastWriteError"]
+            .as_str()
+            .unwrap()
+            .contains("配额")
+    );
     host.fail_put = false;
     assert_eq!(host.schedule(22, "req_one").await["decision"], "pick");
     host.cancel(10).await;
@@ -500,7 +576,7 @@ async fn storage_failure_delegates_without_picking_and_releases_coordination() {
 
 #[tokio::test]
 async fn cancelling_scheduler_during_persistence_releases_intent() {
-    let mut host = Host::start(None, 0).await;
+    let mut host = Host::start(HashMap::new(), 0).await;
     host.model(10, "req_one", false).await;
     host.schedule(20, "req_one").await;
     sleep(Duration::from_millis(1050)).await;
@@ -513,5 +589,135 @@ async fn cancelling_scheduler_during_persistence_releases_intent() {
     host.hold_put = false;
     assert_eq!(host.schedule(22, "req_one").await["decision"], "pick");
     host.cancel(10).await;
+    host.stop().await;
+}
+
+#[tokio::test]
+async fn all_history_survives_pagination_restart_and_index_rollover() {
+    let mut host = Host::start(HashMap::new(), 0).await;
+    // 每批保留的活动父调用低于 SDK 并发上限，不需要真实上游
+    for batch in 0..9 {
+        for offset in 0..64 {
+            let n = batch * 64 + offset;
+            let request = format!("req_{n:04}");
+            host.model_input(10000 + n, &request, false, br#"{"model":"test-model","session_id":"session-private-test","previous_response_id":"test_response","input":"test"}"#.to_vec()).await;
+            assert_eq!(
+                host.schedule(20000 + n, &request).await["decision"],
+                "delegate"
+            );
+        }
+        sleep(Duration::from_millis(1050)).await;
+        for offset in 0..64 {
+            let n = batch * 64 + offset;
+            let request = format!("req_{n:04}");
+            // CAS 冲突只重试状态，不重放选号或删除记录
+            if n == 128 {
+                host.conflict_puts = 1;
+            }
+            assert_eq!(
+                host.schedule(30000 + n, &request).await["decision"],
+                "delegate"
+            );
+            host.cancel(10000 + n).await;
+        }
+    }
+    assert_eq!(
+        host.state
+            .keys()
+            .filter(|(namespace, key)| namespace == "history" && key.starts_with("record-"))
+            .count(),
+        576
+    );
+    let first = host.history(50000, "limit=100").await;
+    assert_eq!(first["pagination"]["total"], 576);
+    assert_eq!(first["records"].as_array().unwrap().len(), 100);
+    let anchor = first["asOf"].as_u64().unwrap();
+    let mut ids = HashSet::new();
+    for page in 1..=6 {
+        let history = host
+            .history(
+                50000 + page,
+                &format!("limit=100&page={page}&asOf={anchor}"),
+            )
+            .await;
+        for record in history["records"].as_array().unwrap() {
+            assert!(ids.insert(record["id"].as_str().unwrap().to_owned()));
+        }
+    }
+    assert_eq!(ids.len(), 576);
+    let last = host.history(51000, "requestId=req_0000&limit=20").await;
+    assert_eq!(last["records"][0]["requestId"], "req_0000");
+    let state = host.state.clone();
+    let version = host.version;
+    host.stop().await;
+    let mut host = Host::start(state, version).await;
+    let page = host
+        .history(52000, "limit=20&page=29&result=unchanged")
+        .await;
+    assert_eq!(page["pagination"]["total"], 576);
+    assert_eq!(page["records"].as_array().unwrap().len(), 16);
+    host.stop().await;
+}
+
+#[tokio::test]
+async fn incomplete_append_is_visible_and_committed_record_is_recovered_without_replaying_pick() {
+    for fail_record in [true, false] {
+        let mut host = Host::start(HashMap::new(), 0).await;
+        host.model(10, "req_one", false).await;
+        host.schedule(20, "req_one").await;
+        sleep(Duration::from_millis(1050)).await;
+        host.fail_record = fail_record;
+        host.fail_commit = !fail_record;
+        assert_eq!(host.schedule(21, "req_one").await["decision"], "delegate");
+        let history = host.history(30, "limit=20").await;
+        assert_eq!(history["pagination"]["total"], 0);
+        assert_eq!(history["storage"]["incompleteWrites"], 1);
+        host.cancel(10).await;
+        host.fail_record = false;
+        host.fail_commit = false;
+        if !fail_record {
+            host.call(
+                40,
+                Stage::Maintenance,
+                "plugin.reconcile",
+                None,
+                json!({}),
+                vec![],
+            )
+            .await;
+            host.result(40).await;
+            let history = host.history(41, "limit=20").await;
+            assert_eq!(history["pagination"]["total"], 1);
+            assert_eq!(history["storage"]["incompleteWrites"], 0);
+        }
+        host.stop().await;
+    }
+}
+
+#[tokio::test]
+async fn settings_reject_incomplete_or_foreign_input_before_native_dispatch() {
+    let mut host = Host::start(HashMap::new(), 0).await;
+    for (id, body) in [
+        (
+            10,
+            json!({"expectedRevision":1,"configuration":{},"bindings":[]}),
+        ),
+        (
+            11,
+            json!({"expectedRevision":1,"configuration":{"waitSeconds":0},"bindings":[]}),
+        ),
+        (
+            12,
+            json!({"expectedRevision":1,"configuration":{"waitSeconds":15},"bindings":[],"unrelated":"value"}),
+        ),
+    ] {
+        host.call(id, Stage::Management, "management.handle", None, json!({"method":"POST","path":"settings","query":"","content_type":"application/json","headers":[]}), serde_json::to_vec(&body).unwrap()).await;
+        let (response, payload) = host.result(id).await;
+        assert_eq!(response["status"], 400);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&payload).unwrap()["error"]["code"],
+            "invalid_settings"
+        );
+    }
     host.stop().await;
 }

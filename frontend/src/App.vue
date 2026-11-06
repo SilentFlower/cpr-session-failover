@@ -6,6 +6,7 @@ import { zhHans } from '@codex-proxy/ui/locale'
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { getHistory } from './api/modules/history'
 import RecordDetails from './components/RecordDetails.vue'
+import SettingsPanel from './components/SettingsPanel.vue'
 import { bindingResult, duration, outcomeText, relativeTime, stageText } from './presenter'
 
 const snapshot = shallowRef<HistoryResponse>()
@@ -28,16 +29,8 @@ const resultOptions = [
 ]
 
 const records = computed(() => snapshot.value?.records ?? [])
-const filtered = computed(() => records.value.filter((record) => {
-  switch (resultFilter.value) {
-    case 'changed': return record.bindingChanged === true
-    case 'unknown': return record.bindingChanged === null
-    case 'unchanged': return record.bindingChanged === false
-    default: return true
-  }
-}))
 const changedCount = computed(() => records.value.filter(record => record.bindingChanged === true).length)
-const rows = computed(() => filtered.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value))
+const total = computed(() => snapshot.value?.pagination.total ?? 0)
 
 const columns: TableColumn<HistoryRecord>[] = [
   {
@@ -90,13 +83,9 @@ const columns: TableColumn<HistoryRecord>[] = [
   },
 ]
 
-watch([resultFilter, pageSize], () => {
-  page.value = 1
-  expanded.value = []
-})
-watch(() => filtered.value.length, (length) => {
-  page.value = Math.min(page.value, Math.max(1, Math.ceil(length / pageSize.value)))
-})
+watch(resultFilter, () => void load(appliedRequestId.value, true))
+watch(pageSize, () => void load(appliedRequestId.value, true))
+watch(page, () => void load(appliedRequestId.value))
 
 async function load(id: string, resetPage = false) {
   if (loading.value)
@@ -104,21 +93,27 @@ async function load(id: string, resetPage = false) {
   loading.value = true
   error.value = ''
   try {
-    const response = await getHistory(id)
+    const response = await getHistory({
+      requestId: id,
+      result: resultFilter.value,
+      page: resetPage ? 1 : page.value,
+      limit: pageSize.value,
+      asOf: resetPage ? undefined : snapshot.value?.asOf,
+    })
     if (!mounted)
       return
     snapshot.value = response
     appliedRequestId.value = id
     now.value = Date.now()
     expanded.value = []
-    if (resetPage)
-      page.value = 1
+    page.value = response.pagination.page
   }
   catch (reason) {
     if (mounted) {
       error.value = reason instanceof Error
         ? reason.message
         : '切换记录读取失败'
+      page.value = snapshot.value?.pagination.page ?? 1
     }
   }
   finally {
@@ -152,6 +147,7 @@ onBeforeUnmount(() => {
 <template>
   <ZConfigProvider :locale="zhHans">
     <main class="space-y-4 text-z-text">
+      <SettingsPanel />
       <ZCard>
         <form class="flex flex-wrap items-center gap-3" @submit.prevent="search">
           <ZInput
@@ -162,37 +158,40 @@ onBeforeUnmount(() => {
             :disabled="loading"
             maxlength="256"
           />
-          <ZSelect v-model="resultFilter" aria-label="改绑结果" :options="resultOptions" class="w-full sm:w-48" />
+          <ZSelect v-model="resultFilter" aria-label="改绑结果" :disabled="loading" :options="resultOptions" class="w-full sm:w-48" />
           <ZButton type="primary" native-type="submit" :disabled="loading">
             查询
           </ZButton>
           <ZButton :disabled="loading || (!requestId && resultFilter === 'all' && !appliedRequestId)" @click="reset">
             重置
           </ZButton>
-          <ZButton :loading="loading" class="sm:ml-auto" @click="load(appliedRequestId)">
+          <ZButton :loading="loading" class="sm:ml-auto" @click="load(appliedRequestId, true)">
             刷新
           </ZButton>
         </form>
 
         <div v-if="snapshot" class="mt-4 flex flex-wrap gap-x-5 gap-y-2 text-z-sm text-z-text-secondary" aria-live="polite">
-          <span>选号等待阈值 <strong class="font-emphasis text-z-text">{{ snapshot.configuration.waitSeconds }} 秒</strong></span>
-          <span>当前查询 {{ records.length }} 条</span>
-          <span>已确认改绑 {{ changedCount }} 条</span>
-          <span>最多保留 {{ snapshot.configuration.historyLimit }} 条，受存储容量限制</span>
+          <span>匹配历史 {{ total }} 条</span>
+          <span>本页已确认改绑 {{ changedCount }} 条</span>
+          <span>不按条数自动清理</span>
+          <span v-if="snapshot.storage.incompleteWrites">有 {{ snapshot.storage.incompleteWrites }} 次未完成写入，未计入列表</span>
         </div>
       </ZCard>
 
       <ZCard>
+        <p v-if="snapshot?.storage.lastWriteError" role="alert" class="mb-4 rounded-z bg-z-warning-container p-3 text-z-warning-on-container">
+          {{ snapshot.storage.lastWriteError }}
+        </p>
         <div v-if="error" role="alert" class="mb-4 flex flex-wrap items-center gap-3 rounded-z bg-z-error-container p-3 text-z-error-on-container">
           <span>{{ error }}</span>
-          <ZButton size="small" :disabled="loading" @click="load(appliedRequestId)">
+          <ZButton size="small" :disabled="loading" @click="load(appliedRequestId, true)">
             重新读取
           </ZButton>
         </div>
 
         <ZTable
           :columns="columns"
-          :data="rows"
+          :data="records"
           row-key="id"
           :loading="loading"
           :expanded-row-keys="expanded"
@@ -260,10 +259,10 @@ onBeforeUnmount(() => {
         </ZTable>
 
         <ZPagination
-          v-if="filtered.length"
+          v-if="total"
           v-model:current-page="page"
           v-model:page-size="pageSize"
-          :total="filtered.length"
+          :total="total"
           :page-sizes="[10, 20, 50]"
           :disabled="loading"
           class="mt-4"

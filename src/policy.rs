@@ -17,14 +17,16 @@ const MAX_SESSIONS: usize = 4096;
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub struct Config {
     pub wait_seconds: u32,
-    pub history_limit: usize,
+    /// 只接受旧配置中的字段，保留策略不再使用该值，保存设置时移除
+    #[serde(default, skip_serializing, rename = "historyLimit")]
+    pub legacy_history_limit: Option<usize>,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
             wait_seconds: 15,
-            history_limit: 200,
+            legacy_history_limit: None,
         }
     }
 }
@@ -35,9 +37,6 @@ impl Config {
     pub fn validate(&self) -> Result<(), String> {
         if !(1..=110).contains(&self.wait_seconds) {
             return Err("迁移等待阈值须为 1～110 秒".into());
-        }
-        if !(10..=500).contains(&self.history_limit) {
-            return Err("切换记录数须为 10～500".into());
         }
         Ok(())
     }

@@ -1,4 +1,4 @@
-import { request } from '../request'
+import { isObject, request } from '../request'
 
 /** 对应插件持久历史中的一条记录，空值保留未知含义 */
 export interface HistoryRecord {
@@ -33,11 +33,10 @@ export interface HistoryRecord {
 /** 历史查询复用 CLI 的数据，不维护页面自己的切换账本 */
 export interface HistoryResponse {
   records: HistoryRecord[]
-  configuration: { waitSeconds: number, historyLimit: number }
-}
-
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
+  configuration: { waitSeconds: number }
+  pagination: { page: number, pageSize: number, total: number }
+  asOf: number
+  storage: { incompleteWrites: number, automaticDeletion: false, lastWriteError: string | null }
 }
 
 function isRecord(value: unknown): value is HistoryRecord {
@@ -79,19 +78,38 @@ function isRecord(value: unknown): value is HistoryRecord {
     && (value.bindingChanged === null || typeof value.bindingChanged === 'boolean')
 }
 
+/** 历史读取选项，时间锚点用于翻页时保持记录集合 */
+export interface HistoryInput {
+  requestId: string
+  result: string
+  page: number
+  limit: number
+  asOf?: number
+}
+
 /**
- * 查询当前保留的切换记录，最多读取宿主允许的 500 条
- * @param requestId 精确匹配的请求 ID，空字符串表示不限
- * @return 从新到旧的记录与当前实例配置
+ * 分页查询全部保留历史，不改变保留策略
+ * @param input 请求筛选、当前页及可选时间锚点
+ * @return 从新到旧的一页记录与匹配总数
  */
-export async function getHistory(requestId: string): Promise<HistoryResponse> {
-  const query = new URLSearchParams({ limit: '500' })
-  if (requestId)
-    query.set('requestId', requestId)
+export async function getHistory(input: HistoryInput): Promise<HistoryResponse> {
+  const query = new URLSearchParams({
+    page: String(input.page),
+    limit: String(input.limit),
+    result: input.result,
+  })
+  if (input.requestId)
+    query.set('requestId', input.requestId)
+  if (input.asOf !== undefined)
+    query.set('asOf', String(input.asOf))
   const value = await request('history', query)
-  if (!isObject(value) || !Array.isArray(value.records) || value.records.length > 500
+  if (!isObject(value) || !Array.isArray(value.records)
     || !value.records.every(isRecord) || !isObject(value.configuration)
-    || typeof value.configuration.waitSeconds !== 'number' || typeof value.configuration.historyLimit !== 'number') {
+    || typeof value.configuration.waitSeconds !== 'number' || !isObject(value.pagination)
+    || !['page', 'pageSize', 'total'].every(key => Number.isSafeInteger(value.pagination && (value.pagination as Record<string, unknown>)[key]))
+    || !Number.isSafeInteger(value.asOf) || !isObject(value.storage)
+    || !Number.isSafeInteger(value.storage.incompleteWrites) || value.storage.automaticDeletion !== false
+    || (value.storage.lastWriteError !== null && typeof value.storage.lastWriteError !== 'string')) {
     throw new Error('切换记录格式不符合当前插件合同')
   }
   return value as unknown as HistoryResponse

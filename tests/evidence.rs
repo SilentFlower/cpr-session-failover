@@ -1,9 +1,6 @@
 //! 验证切换证据不跨请求或尝试串用，未知事实不伪装成成功
 
-use cpr_session_failover::{
-    audit::{Journal, Record},
-    diagnostics::evidence,
-};
+use cpr_session_failover::{audit::Record, diagnostics::evidence};
 use gateway_plugin_sdk::call::policy::AccountScheduleRequest;
 use serde_json::json;
 
@@ -126,24 +123,4 @@ fn missing_routing_policy_keeps_binding_change_unknown() {
         evidence(&document, &record()).unwrap().binding_changed,
         None
     );
-}
-
-#[test]
-fn journal_is_idempotent_and_removes_old_records_within_budget() {
-    let mut journal = Journal::default();
-    let first = record();
-    journal.append(first.clone(), 10).unwrap();
-    journal.append(first, 10).unwrap();
-    assert_eq!(journal.records.len(), 1);
-    for _ in 0..20 {
-        journal.append(record(), 10).unwrap();
-    }
-    assert_eq!(journal.records.len(), 10);
-    for _ in 0..500 {
-        let mut large = record();
-        large.error_code = Some("x".repeat(1000));
-        journal.append(large, 500).unwrap();
-    }
-    assert!(serde_json::to_vec(&journal).unwrap().len() <= 240 * 1024);
-    assert!(journal.records.len() < 500);
 }

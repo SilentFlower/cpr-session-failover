@@ -11,13 +11,14 @@
 1. 打开 CPR「插件管理」→「安装」→「GitHub」
 2. 仓库填写 `SilentFlower/cpr-session-failover`，选择稳定版附件
 3. 核对附件和 SHA-256，接受完整信任后安装
-4. 在设置中配置等待阈值，默认 **15 秒**；本体应保留账号排队名额，最终排队超时必须大于此值
+4. 从左侧插件导航打开「会话切换记录」，在顶部配置等待阈值，默认 **15 秒**
+5. 本体应保留账号排队名额，最终排队超时必须大于此值
 
 也可以从 [Releases](https://github.com/SilentFlower/cpr-session-failover/releases) 下载 `.tar.gz` 上传安装。GitHub 自动生成的源码压缩包不是安装包
 
 插件命中的模型请求会使用请求级严格绑定，不改变全局设置。默认作用范围不限 Key，可在「高级设置」收窄到指定 Key、分组或模型；请求中间件、attempt 和账号调度须使用相同范围
 
-升级保留现有配置，已保存的 5 秒不会被覆盖。要采用 15 秒，请在「插件参数」修改迁移等待阈值并保存
+升级保留现有配置，已保存的 5 秒不会被覆盖。要采用 15 秒，在扩展页顶部修改迁移等待阈值并保存
 
 ## 等待与改绑
 
@@ -54,7 +55,15 @@
 | 参数 | 默认 | 范围 | 含义 |
 | --- | ---: | --- | --- |
 | `waitSeconds` | 15 | 1～110 秒 | 本次账号选择的持续等待阈值，须小于本体总排队超时 |
-| `historyLimit` | 200 | 10～500 | 最大保留记录数，同时受 240 KiB 历史字节预算限制 |
+
+扩展页顶部的「插件设置」与 CPR 原生设置共用同一份配置。「高级设置」可调整三个阶段的开关、执行顺序、失败处理，以及 Key、分组、模型和适用阶段的 Provider 范围
+
+- 执行顺序越小越先执行，0 为默认值，只比较同阶段处理器
+- 失败处理为「拒绝请求」或「继续下一个处理器」，沿用 CPR 原生规则
+- 空范围表示不限，同一维度内任选其一，不同维度同时满足
+- 完整迁移与记录需要三个阶段同时启用，且请求范围相互覆盖
+- 保存会让 CPR 重新发布当前插件并刷新扩展页，不会清除历史
+- 并发修改会拒绝覆盖，请重新读取设置后确认，写入结果不确定时也先重新读取
 
 CPR 未公开真实入队起点和绑定版本，纯插件使用首次选号后的持续等待计时；触发时刻还受宿主重评估、RPC 和日志保存耗时影响。协调范围是同一插件进程；多个 CPR 节点之间的绑定一致性由宿主原子操作保证，但插件不提供跨节点迁移去重
 
@@ -62,24 +71,30 @@ CPR 未公开真实入队起点和绑定版本，纯插件使用首次选号后�
 
 从插件详情或左侧插件导航打开「会话切换记录」，支持按请求 ID 精确查询、按改绑结果筛选、分页和手动刷新。展开记录可查看完整账号 ID、会话摘要、等待耗时及错误分类
 
-[浅色页面](https://github.com/SilentFlower/cpr-session-failover/releases/download/v0.2.0/records-light.png) · [深色页面](https://github.com/SilentFlower/cpr-session-failover/releases/download/v0.2.0/records-dark.png) · [记录详情](https://github.com/SilentFlower/cpr-session-failover/releases/download/v0.2.0/records-details.png)，截图使用隔离实例中的模拟记录
+[浅色页面](https://github.com/SilentFlower/cpr-session-failover/releases/download/v0.3.0/settings-light.png) · [深色页面](https://github.com/SilentFlower/cpr-session-failover/releases/download/v0.3.0/settings-dark.png) · [高级设置](https://github.com/SilentFlower/cpr-session-failover/releases/download/v0.3.0/settings-advanced.png) · [记录详情](https://github.com/SilentFlower/cpr-session-failover/releases/download/v0.3.0/records-details.png)，截图使用隔离实例中的模拟记录
 
-页面时间由插件后端按 UTC 显示。仅在提出迁移或触发迁移保护时记录，直接取得账号的普通请求不会出现在列表中。统计仅覆盖当前查询到的保留历史，不能代表累计切换次数
+页面时间由插件后端按 UTC 显示。仅在提出迁移或触发迁移保护时记录，直接取得账号的普通请求不会出现在列表中。匹配总数覆盖所有保留历史，已确认改绑数量仅统计当前页，均不能代表真实累计切换次数
 
 也可在运行 CPR 的环境执行：
 
 ```bash
-codex-proxy-rs plugin <配置ID> history --limit 50
+codex-proxy-rs plugin <配置ID> history --limit 50 --page 1
 codex-proxy-rs plugin <配置ID> history --request-id req_xxx
 ```
 
 管理员也可以通过 `GET /api/admin/plugins/extensions` 取得插件的 `instanceId`、`artifactSha256` 和 `revision`，再请求：
 
 ```text
-GET /api/admin/plugins/extensions/{instanceId}/{artifactSha256}/{revision}/api/history?limit=50&requestId=req_xxx
+GET /api/admin/plugins/extensions/{instanceId}/{artifactSha256}/{revision}/api/history?limit=50&page=1&requestId=req_xxx
 ```
 
-记录保存在宿主插件私有状态，重启后可读取；正常运行日志同时发送给 `host.log`。普通日志可能被宿主限频，排查时以持久历史为准
+记录保存在宿主插件私有状态，重启后可读取。正常运行日志同时发送给 `host.log`，普通日志可能被宿主限频，排查时以持久历史为准
+
+历史不设置默认保留条数，不按条数或时间自动删除。查询通过 `page` 和 `limit` 分页，`limit` 是单页大小（1～500），不限制历史总数。`pagination.total` 返回匹配总数，后续页沿用首轮的 `asOf` 可固定时间范围，手动刷新会读取新记录。改绑结果使用 `result=all|changed|unchanged|unknown`
+
+宿主实际配额为每个命名空间最多 16 MiB、10,000 个状态对象，单个状态值最多 256 KiB。索引与记录共同占用配额，不能把对象数当成可保存日志数。配额耗尽时已有记录保留，插件不发起无法完整记账的迁移，日志及页面显示写入失败
+
+升级兼容已有 `audit/journal` 历史，新增记录使用 `history` 命名空间。未完成的写入单独计数，维护只补齐已经保存的记录，不重放选号。新版记录写入后，旧包缺少对应命名空间，CPR 可能拒绝直接回退，升级前按宿主方式备份私有数据
 
 | 字段 | 含义 |
 | --- | --- |

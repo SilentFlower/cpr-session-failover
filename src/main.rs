@@ -9,14 +9,15 @@ use std::{
 };
 
 use cpr_session_failover::{
-    audit::{Audit, Record, metadata},
+    audit::{Audit, HistoryQuery, Record, metadata},
     diagnostics, fault,
     identity::identify,
     policy::{Action, Config, Policy},
+    settings::SettingsControl,
 };
 use form_urlencoded::parse as parse_query;
 use gateway_plugin_sdk::{
-    CallBudgets, ErrorCode, Manifest, PluginFault, Stage,
+    CallBudgets, Capability, ErrorCode, Manifest, PluginFault, Stage,
     call::{
         host::{LogLevel, LogRequest, LogResult},
         management::{
@@ -44,6 +45,7 @@ struct App {
     started: Instant,
     policy: Arc<Mutex<Policy>>,
     audit: Audit,
+    settings: SettingsControl,
 }
 
 /// 查询时生成 UTC 展示字段，不修改持久历史的 schema 或使用浏览器本地时区
@@ -112,7 +114,9 @@ impl App {
                 identity,
                 self.now(),
             ) {
+                self.audit.track(&request_id);
                 guard = Some(RequestGuard {
+                    audit: &self.audit,
                     policy: self.policy.clone(),
                     request_id: request_id.clone(),
                 });
@@ -154,7 +158,7 @@ impl App {
             .and_then(|response| response.metadata.clone());
         let response_error = result.as_ref().err().map(error_code);
         let ids = if attempt_index.is_some() || response_error.is_some() {
-            self.audit.for_request(&request_id).await
+            self.audit.for_request(&request_id)
         } else {
             Vec::new()
         };
@@ -203,6 +207,7 @@ impl App {
             Action::Pick { account_id } => AccountScheduleDecision::Pick { account_id },
             Action::RecordOnly(record) => {
                 if let Err(error) = scheduling_audit(self.audit.append(&call.host, record)).await {
+                    self.audit.note_failure(&error);
                     report_error(&call.host, &call.request.request_id, &error).await;
                 }
                 AccountScheduleDecision::Delegate
@@ -237,6 +242,7 @@ impl App {
                     }
                     Err(error) => {
                         // 记录没能落地就不发起迁移，客户端仍沿用宿主原等待及超时行为
+                        self.audit.note_failure(&error);
                         report_error(&call.host, &call.request.request_id, &error).await;
                         AccountScheduleDecision::Delegate
                     }
@@ -247,18 +253,7 @@ impl App {
     }
 
     async fn reconcile(&self, host: &HostClient) -> Result<(), PluginFault> {
-        let journal = self.audit.list(host).await?;
-        let mut records: Vec<&Record> = journal
-            .records
-            .iter()
-            .filter(|r| {
-                r.terminal_status == "pending"
-                    || (r.evidence_status == "pending" && r.evidence_attempts < 3)
-            })
-            .collect();
-        // 长请求不能一直占据维护批次，先处理最久未检查的记录
-        records.sort_by_key(|r| r.last_checked_at_ms.unwrap_or(0));
-        for record in records.into_iter().take(3) {
+        for record in self.audit.pending(host).await? {
             self.audit
                 .update(host, &record.id, |r| {
                     r.last_checked_at_ms = Some(wall_ms());
@@ -310,7 +305,7 @@ impl App {
                     r.evidence_attempts = r.evidence_attempts.saturating_add(1);
                 })
                 .await?;
-            match diagnostics::fetch(host, record).await {
+            match diagnostics::fetch(host, &record).await {
                 Ok(evidence) => {
                     self.audit
                         .update(host, &record.id, |r| {
@@ -359,16 +354,14 @@ impl App {
     async fn history(
         &self,
         host: &HostClient,
-        request_id: Option<&str>,
-        limit: usize,
+        query: HistoryQuery<'_>,
     ) -> Result<Value, PluginFault> {
-        let journal = self.audit.list(host).await?;
-        let records: Vec<HistoryEntry> = journal
+        let as_of = query.as_of;
+        let limit = query.limit;
+        let history = self.audit.query(host, query).await?;
+        let records: Vec<HistoryEntry> = history
             .records
             .into_iter()
-            .rev()
-            .filter(|r| request_id.is_none_or(|id| r.request_id == id))
-            .take(limit.min(self.config.history_limit))
             .map(|record| HistoryEntry {
                 decision_time_utc: format_utc(Some(record.decision_at_ms)),
                 admitted_time_utc: format_utc(record.admitted_at_ms),
@@ -376,20 +369,27 @@ impl App {
                 record,
             })
             .collect();
-        Ok(
-            json!({"records": records, "configuration": self.config, "计时口径": "从首次选号开始；其他请求完成迁移后重新计算等待", "绑定证据": "bindingChanged 为 null 表示尚未核实，admitted 只确认实际取得账号名额"}),
-        )
+        Ok(json!({
+            "records":records, "configuration":self.config,
+            "pagination":{"page":history.page,"pageSize":limit,"total":history.total},
+            "asOf":as_of,
+            "storage":{"incompleteWrites":history.incomplete,"automaticDeletion":false,"lastWriteError":self.audit.last_write_error()},
+            "计时口径":"从首次选号开始，其他请求完成迁移后重新计算等待",
+            "绑定证据":"bindingChanged 为 null 表示尚未核实，admitted 只确认实际取得账号名额"
+        }))
     }
 }
 
 // 父调用取消时同步归还协调位置，不能启动已经脱离父调用的宿主回调
 /// 父请求结束时归还内存协调位置
-struct RequestGuard {
+struct RequestGuard<'a> {
+    audit: &'a Audit,
     policy: Arc<Mutex<Policy>>,
     request_id: String,
 }
-impl Drop for RequestGuard {
+impl Drop for RequestGuard<'_> {
     fn drop(&mut self) {
+        self.audit.forget(&self.request_id);
         self.policy
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -471,12 +471,24 @@ async fn report_error(host: &HostClient, request_id: &str, error: &PluginFault) 
 
 fn management_registration() -> ManagementRegistration {
     ManagementRegistration {
-        routes: vec![ManagementRoute {
-            method: "GET".into(),
-            path: "history".into(),
-            request_content_types: Vec::new(),
+        routes: [
+            ("GET", "history"),
+            ("GET", "settings"),
+            ("POST", "settings"),
+            ("GET", "resources"),
+        ]
+        .into_iter()
+        .map(|(method, path)| ManagementRoute {
+            method: method.into(),
+            path: path.into(),
+            request_content_types: if method == "POST" {
+                vec!["application/json".into()]
+            } else {
+                Vec::new()
+            },
             response_content_types: vec!["application/json".into()],
-        }],
+        })
+        .collect(),
         resources: ["web/index.html", "web/app.js", "web/app.css"]
             .into_iter()
             .map(|path| ManagementResource {
@@ -487,7 +499,7 @@ fn management_registration() -> ManagementRegistration {
         pages: vec![ManagementPage {
             id: "history".into(),
             title: "会话切换记录".into(),
-            description: Some("查看选号等待、实际账号与改绑结果".into()),
+            description: Some("管理插件设置，查看选号等待与改绑结果".into()),
             entry: "web/index.html".into(),
             icon: None,
         }],
@@ -510,8 +522,16 @@ fn command_registration() -> CommandRegistration {
                     default: None,
                 },
                 CommandParameter {
+                    name: "page".into(),
+                    description: "历史页码，从 1 开始".into(),
+                    value_type: CommandParameterType::Int,
+                    required: false,
+                    sensitive: false,
+                    default: Some(CommandValue::Int(1)),
+                },
+                CommandParameter {
                     name: "limit".into(),
-                    description: "返回最近记录数，最多 500".into(),
+                    description: "每页记录数，1～500，不影响历史保留".into(),
                     value_type: CommandParameterType::Int,
                     required: false,
                     sensitive: false,
@@ -539,7 +559,25 @@ async fn command(
         None => 50,
         _ => return Err(fault("返回记录数须为 1～500")),
     };
-    let value = app.history(&call.host, request_id, limit).await?;
+    let page = match call.request.arguments.get("page") {
+        Some(CommandValue::Int(n)) if *n > 0 => {
+            usize::try_from(*n).map_err(|_| fault("历史页码超限"))?
+        }
+        None => 1,
+        _ => return Err(fault("历史页码须大于 0")),
+    };
+    let value = app
+        .history(
+            &call.host,
+            HistoryQuery {
+                request_id,
+                result: "all",
+                page,
+                limit,
+                as_of: wall_ms(),
+            },
+        )
+        .await?;
     Ok(TypedReply::new(CommandResult {
         stdout: format!(
             "{}\n",
@@ -555,6 +593,12 @@ async fn management(
     app: &App,
     call: TypedCall<ManagementRequest>,
 ) -> Result<TypedReply<ManagementResponse>, PluginFault> {
+    if matches!(call.request.path.as_str(), "settings" | "resources") {
+        return app
+            .settings
+            .handle(&call.host, &call.request, &call.payload)
+            .await;
+    }
     let pairs: BTreeMap<String, String> = parse_query(call.request.query.as_bytes())
         .into_owned()
         .collect();
@@ -568,11 +612,35 @@ async fn management(
     {
         return Err(fault("历史查询参数无效"));
     }
+    let page = pairs
+        .get("page")
+        .map(|s| s.parse::<usize>())
+        .transpose()
+        .map_err(|_| fault("历史页码无效"))?
+        .unwrap_or(1);
+    let result = pairs.get("result").map(String::as_str).unwrap_or("all");
+    let as_of = pairs
+        .get("asOf")
+        .map(|s| s.parse::<u64>())
+        .transpose()
+        .map_err(|_| fault("历史时间锚点无效"))?
+        .unwrap_or_else(wall_ms);
+    if page == 0 || !matches!(result, "all" | "changed" | "unchanged" | "unknown") {
+        return Err(fault("历史查询条件无效"));
+    }
     let value = app
         .history(
             &call.host,
-            pairs.get("requestId").map(String::as_str),
-            limit,
+            HistoryQuery {
+                request_id: pairs
+                    .get("requestId")
+                    .filter(|s| !s.is_empty())
+                    .map(String::as_str),
+                result,
+                page,
+                limit,
+                as_of,
+            },
         )
         .await?;
     Ok(TypedReply::new(ManagementResponse {
@@ -604,7 +672,23 @@ async fn main() -> Result<(), Box<dyn Error>> {
     config.validate()?;
     session.set_call_budgets(CallBudgets::from([(Stage::Maintenance, 30_000)]))?;
     let app = Arc::new(App {
-        audit: Audit::new(config.history_limit),
+        settings: SettingsControl::new(
+            session.handshake().instance_id.clone(),
+            session.handshake().artifact_sha256.clone(),
+            manifest
+                .contributes
+                .get(&Capability::Middleware)
+                .ok_or("缺少中间件声明")?
+                .id
+                .clone(),
+            manifest
+                .contributes
+                .get(&Capability::Scheduler)
+                .ok_or("缺少调度声明")?
+                .id
+                .clone(),
+        ),
+        audit: Audit::new(),
         config,
         started: Instant::now(),
         policy: Arc::new(Mutex::new(Policy::default())),
