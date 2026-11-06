@@ -1,0 +1,110 @@
+# CPR 会话排队迁移
+
+在严格会话绑定下，账号选择持续等待达到阈值后，选择可用账号，并由 CPR 同步迁移会话绑定。后续请求跟随新账号，旧账号恢复空闲不会自动切回
+
+这是独立插件，不修改 CPR 本体，不直接读取或写入宿主数据库、Redis 或凭据
+
+## 安装
+
+要求 CPR **>=3.41.0**，发行包提供 Linux x86_64 版本，运行环境需 glibc >=2.34
+
+1. 打开 CPR「插件管理」→「安装」→「GitHub」
+2. 仓库填写 `SilentFlower/cpr-session-failover`，选择稳定版附件
+3. 核对附件和 SHA-256，接受完整信任后安装
+4. 在设置中配置等待阈值，默认 **5 秒**；本体应保留账号排队名额，最终排队超时必须大于此值
+
+也可以从 [Releases](https://github.com/SilentFlower/cpr-session-failover/releases) 下载 `.tar.gz` 上传安装。GitHub 自动生成的源码压缩包不是安装包
+
+插件命中的模型请求会使用请求级严格绑定，不改变全局设置。默认作用范围不限 Key，可在「高级设置」收窄到指定 Key、分组或模型；请求中间件、attempt 和账号调度须使用相同范围
+
+## 等待与改绑
+
+```text
+会话绑定 A → A 繁忙 → 等待达到阈值 → 申请可用 B
+                                      ↓
+                          CPR 取得 B 名额并原子改绑
+                                      ↓
+                              后续会话请求跟随 B
+```
+
+- 计时从每次尝试首次进入账号选择开始，包含其后的排队及重新选号
+- 成功取得账号名额即终止这一轮计时；上游错误后的新选号尝试重新计时
+- 本插件介入响应流建立前的选号；响应流交付后的恢复由 CPR 处理
+- **不检测上游首事件、首推理、首字或首正文超时**，不会因为开始生成后迟迟无输出而换号重发
+- 同一会话同时只提出一个迁移意图；确认取得新账号后，其余等待者重新计算阈值
+- 新账号名额申请失败时继续交给宿主重读容量；没有可用备选则继续原等待
+- 本体总排队预算、Key 准入、账号资格和队列顺序仍然生效，插件不扩大这些上限
+- 队列满可能在达到阈值前被本体拒绝；关闭账号排队或总预算不足时会留下阻止记录
+- 已在旧账号执行的请求不被强制中断，其完成不会把绑定改回旧账号
+
+目标账号按当前并发占用比例、权重和会话稳定散列选择；账号资格与真实租约由宿主最终裁决
+
+## 原生续写边界
+
+带 `previous_response_id`、`item_reference` 的请求以及预热不由插件主动跨号迁移。它们仍受请求级严格绑定及宿主原生续写规则约束
+
+绑定迁移不会复制上游上下文。旧响应属于 A 时，客户端可能需要提交完整历史，在 B 上建立新的响应链；插件不会删除引用编号或伪造历史
+
+没有显式会话身份的请求原样交给宿主处理，不根据 `prompt_cache_key` 或认证头推测会话。换号可能降低缓存命中
+
+## 设置
+
+| 参数 | 默认 | 范围 | 含义 |
+| --- | ---: | --- | --- |
+| `waitSeconds` | 5 | 1～110 秒 | 本次账号选择的持续等待阈值，须小于本体总排队超时 |
+| `historyLimit` | 200 | 10～500 | 最大保留记录数，同时受 240 KiB 历史字节预算限制 |
+
+CPR 未公开真实入队起点和绑定版本，纯插件使用首次选号后的持续等待计时；触发时刻还受宿主重评估、RPC 和日志保存耗时影响。协调范围是同一插件进程；多个 CPR 节点之间的绑定一致性由宿主原子操作保证，但插件不提供跨节点迁移去重
+
+## 查看切换记录
+
+在运行 CPR 的环境执行：
+
+```bash
+codex-proxy-rs plugin <配置ID> history --limit 50
+codex-proxy-rs plugin <配置ID> history --request-id req_xxx
+```
+
+管理员也可以通过 `GET /api/admin/plugins/extensions` 取得插件的 `instanceId`、`artifactSha256` 和 `revision`，再请求：
+
+```text
+GET /api/admin/plugins/extensions/{instanceId}/{artifactSha256}/{revision}/api/history?limit=50&requestId=req_xxx
+```
+
+记录保存在宿主插件私有状态，重启后可读取；正常运行日志同时发送给 `host.log`。普通日志可能被宿主限频，排查时以持久历史为准
+
+| 字段 | 含义 |
+| --- | --- |
+| `requestId`、`attemptIndex` | 关联 CPR 模型请求及尝试 |
+| `sessionHash`、`clientKeyId`、`model` | 带 Key 隔离的会话摘要、认证后的 Key ID 和模型 |
+| `schedulerWaitMs` | 插件计算的本轮持续选号等待 |
+| `accountSelectionWaitMs` | 本体账号选择总耗时，含选择过程及账号排队 |
+| `accountQueueWaitMs` | 本体诊断记录的账号队列等待，缺失保持空值 |
+| `proposedAccountId` | 插件计划选择的目标，不能据此判断成功 |
+| `actualAccountId`、`admittedAtMs` | 宿主 attempt 确认已经取得的实际账号与时间 |
+| `fromAccountId`、`bindingChanged` | 从对应尝试的宿主诊断核实的前账号，以及该迁移意图是否得到改绑证据确认 |
+| `outcome`、`requestErrorCode` | 最终请求结果和已知错误分类 |
+| `errorCode` | 取得账号后该尝试返回的错误分类 |
+| `evidenceStatus` | `pending` 待补齐，`verified` 已核实，`unavailable` 缺少证据，`not_required` 为受限请求 |
+| `terminalStatus` | `pending` 待查询终态，`known` 已取得终态，`unavailable` 无法取得终态 |
+
+| `stage` | 含义 |
+| --- | --- |
+| `proposed` | 已持久化切换意图，尚未确认取得目标账号 |
+| `admitted` | attempt 入口确认实际取得账号名额 |
+| `admitted_by_trace` | 后台从本体时间线补回实际账号确认 |
+| `candidate_unavailable` | 目标账号快照失效，交回宿主重新评估 |
+| `different_account` | 本体实际取得其他账号，原迁移意图未命中 |
+| `blocked` | 原生续写、预热或排队配置使本次请求不能主动迁移 |
+
+**`bindingChanged=true` 才表示该意图已经由诊断核实改绑，`null` 表示未知**。固定账号请求或关键路由事实缺失时，不把调度偏好冒充原绑定
+
+后台维护只对切换记录查询终态和脱敏诊断，不订阅全站请求或逐帧 WebSocket 事件。每批最多检查三条记录，长请求不会阻塞其他记录。前账号和改绑事实从对应请求的诊断补齐，不根据候选账号猜测；时间线被淘汰、诊断缺失或维护调用失败时会保留缺口。日志写入失败时不发起本次迁移，继续宿主原等待
+
+记录不保存请求正文、完整会话 ID、Key 明文、令牌、认证头或原始诊断包
+
+停用插件会停止后续超时迁移，保留已有绑定和私有历史；不会自动把会话迁回旧账号
+
+## 开发与验证
+
+详见 [开发说明](docs/development.md)。SDK 固定到公开 Git 提交，安装包兼容性由宿主版本、RPC 和能力版本共同校验；验证范围见 [验证记录](docs/validation.md)

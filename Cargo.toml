@@ -1,0 +1,29 @@
+[package]
+name = "cpr-session-failover"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99.1"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+gateway-plugin-sdk = { git = "https://github.com/zyycn/codex-proxy-rs.git", rev = "789609dd53663b323e43567d2476f7f83b6b77a1", features = ["io"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = { version = "1.0.150", features = ["raw_value"] }
+sha2 = "0.10.9"
+tokio = { version = "1.52.3", features = ["io-std", "io-util", "macros", "rt", "sync", "time"] }
+uuid = { version = "1.23.4", features = ["v4"] }
+form_urlencoded = "1.2.2"
+zip = { version = "9.1.3", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+tokio = { version = "1.52.3", features = ["process"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1
+panic = "abort"

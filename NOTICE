@@ -1,0 +1,8 @@
+CPR 会话排队迁移插件
+Copyright 2026 SilentFlower
+
+本插件使用 Codex Proxy RS 公开插件 SDK，许可证为 Apache-2.0
+SDK 固定源码：https://github.com/zyycn/codex-proxy-rs/tree/789609dd53663b323e43567d2476f7f83b6b77a1/backend/crates/gateway-plugin/sdk
+
+显式会话身份字段的解释依据 Codex Proxy RS 的公开请求合同
+源码：https://github.com/zyycn/codex-proxy-rs/blob/789609dd53663b323e43567d2476f7f83b6b77a1/backend/crates/gateway-protocol/src/openai/codex.rs
