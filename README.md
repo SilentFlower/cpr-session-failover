@@ -71,7 +71,7 @@ CPR 未公开真实入队起点和绑定版本，纯插件使用首次选号后�
 
 从插件详情或左侧插件导航打开「会话切换记录」，支持按请求 ID 精确查询、按改绑结果筛选、分页和手动刷新。展开记录可查看完整账号 ID、会话摘要、等待耗时及错误分类
 
-[记录页](https://github.com/SilentFlower/cpr-session-failover/releases/download/v0.3.1/records-light.png) · [设置弹窗](https://github.com/SilentFlower/cpr-session-failover/releases/download/v0.3.1/settings-dialog.png) · [高级设置](https://github.com/SilentFlower/cpr-session-failover/releases/download/v0.3.1/settings-advanced.png) · [记录详情](https://github.com/SilentFlower/cpr-session-failover/releases/download/v0.3.1/records-details.png)，截图使用隔离实例中的模拟记录
+[记录页](https://github.com/SilentFlower/cpr-session-failover/releases/download/v0.3.2/records-light.png) · [设置弹窗](https://github.com/SilentFlower/cpr-session-failover/releases/download/v0.3.2/settings-dialog.png) · [高级设置](https://github.com/SilentFlower/cpr-session-failover/releases/download/v0.3.2/settings-advanced.png) · [记录详情](https://github.com/SilentFlower/cpr-session-failover/releases/download/v0.3.2/records-details.png)，截图使用隔离实例中的模拟记录
 
 页面时间由插件后端按 UTC 显示。仅在提出迁移或触发迁移保护时记录，直接取得账号的普通请求不会出现在列表中。匹配总数覆盖所有保留历史，已确认改绑数量仅统计当前页，均不能代表真实累计切换次数
 

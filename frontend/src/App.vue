@@ -150,13 +150,13 @@ onBeforeUnmount(() => {
 
 <template>
   <ZConfigProvider :locale="zhHans">
-    <main class="space-y-4 text-z-text">
+    <!-- 弹窗打开时只裁剪超出可视区的背景，记录和筛选状态继续保留 -->
+    <main class="space-y-4 text-z-text" :class="{ 'overflow-clip': settingsOpen }" :style="settingsOpen ? { maxHeight: 'var(--plugin-viewport-height, 100dvh)' } : undefined">
       <SettingsDialog v-model="settingsOpen" />
       <p v-if="reconnectRequired && !settingsOpen" role="status" class="rounded-z bg-z-info-container p-3 text-z-sm text-z-info-on-container">
         {{ configurationWriteState === 'saved' ? '设置已保存并生效' : '保存结果待确认' }}，点击右上角「刷新页面」继续操作
       </p>
-      <!-- 隔离页高度跟随正文，打开弹窗时收起背景列表，使弹窗定位在宿主可视区域 -->
-      <ZCard v-show="!settingsOpen">
+      <ZCard>
         <form class="flex flex-wrap items-center gap-3" @submit.prevent="search">
           <ZInput
             v-model="requestId"
@@ -189,7 +189,7 @@ onBeforeUnmount(() => {
         </div>
       </ZCard>
 
-      <ZCard v-show="!settingsOpen">
+      <ZCard>
         <p v-if="snapshot?.storage.lastWriteError" role="alert" class="mb-4 rounded-z bg-z-warning-container p-3 text-z-warning-on-container">
           {{ snapshot.storage.lastWriteError }}
         </p>
