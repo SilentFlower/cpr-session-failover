@@ -21,8 +21,9 @@ use gateway_plugin_sdk::{
         host::{LogLevel, LogRequest, LogResult},
         management::{
             CommandDescriptor, CommandInvocation, CommandParameter, CommandParameterType,
-            CommandRegistration, CommandResult, CommandValue, ManagementRegistration,
-            ManagementRequest, ManagementResponse, ManagementRoute,
+            CommandRegistration, CommandResult, CommandValue, ManagementPage,
+            ManagementRegistration, ManagementRequest, ManagementResource, ManagementResponse,
+            ManagementRoute,
         },
         middleware::{MiddlewareHeader, MiddlewareMount},
         policy::{AccountScheduleDecision, AccountScheduleRequest},
@@ -33,7 +34,9 @@ use gateway_plugin_sdk::{
         SessionConfig, TypedCall, TypedReply, methods,
     },
 };
+use serde::Serialize;
 use serde_json::{Value, json};
+use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 /// 每个插件会话共享的业务配置、单调时钟和审计入口
 struct App {
@@ -41,6 +44,17 @@ struct App {
     started: Instant,
     policy: Arc<Mutex<Policy>>,
     audit: Audit,
+}
+
+/// 查询时生成 UTC 展示字段，不修改持久历史的 schema 或使用浏览器本地时区
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HistoryEntry {
+    #[serde(flatten)]
+    record: Record,
+    decision_time_utc: Option<String>,
+    admitted_time_utc: Option<String>,
+    completed_time_utc: Option<String>,
 }
 
 impl App {
@@ -349,12 +363,18 @@ impl App {
         limit: usize,
     ) -> Result<Value, PluginFault> {
         let journal = self.audit.list(host).await?;
-        let records: Vec<Record> = journal
+        let records: Vec<HistoryEntry> = journal
             .records
             .into_iter()
             .rev()
             .filter(|r| request_id.is_none_or(|id| r.request_id == id))
             .take(limit.min(self.config.history_limit))
+            .map(|record| HistoryEntry {
+                decision_time_utc: format_utc(Some(record.decision_at_ms)),
+                admitted_time_utc: format_utc(record.admitted_at_ms),
+                completed_time_utc: format_utc(record.completed_at_ms),
+                record,
+            })
             .collect();
         Ok(
             json!({"records": records, "configuration": self.config, "计时口径": "从首次选号开始；其他请求完成迁移后重新计算等待", "绑定证据": "bindingChanged 为 null 表示尚未核实，admitted 只确认实际取得账号名额"}),
@@ -401,6 +421,13 @@ fn wall_ms() -> u64 {
         .ok()
         .and_then(|d| u64::try_from(d.as_millis()).ok())
         .unwrap_or(0)
+}
+
+fn format_utc(timestamp_ms: Option<u64>) -> Option<String> {
+    OffsetDateTime::from_unix_timestamp_nanos(i128::from(timestamp_ms?) * 1_000_000)
+        .ok()?
+        .format(&Rfc3339)
+        .ok()
 }
 
 fn error_code(error: &PluginFault) -> String {
@@ -450,8 +477,20 @@ fn management_registration() -> ManagementRegistration {
             request_content_types: Vec::new(),
             response_content_types: vec!["application/json".into()],
         }],
-        resources: Vec::new(),
-        pages: Vec::new(),
+        resources: ["web/index.html", "web/app.js", "web/app.css"]
+            .into_iter()
+            .map(|path| ManagementResource {
+                path: path.into(),
+                public: false,
+            })
+            .collect(),
+        pages: vec![ManagementPage {
+            id: "history".into(),
+            title: "会话切换记录".into(),
+            description: Some("查看选号等待、实际账号与改绑结果".into()),
+            entry: "web/index.html".into(),
+            icon: None,
+        }],
         callbacks: Vec::new(),
     }
 }

@@ -8,6 +8,24 @@ permissions:
   contents: read
 
 jobs:
+  frontend:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
+        with:
+          version: 12.6.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: '26.13.0'
+      - name: 安装页面依赖
+        run: pnpm --dir frontend install --frozen-lockfile
+      - name: 检查页面
+        run: pnpm --dir frontend lint
+      - name: 构建页面
+        run: pnpm --dir frontend build
+      - name: 检查页面依赖安全
+        run: pnpm --dir frontend audit --prod
   verify:
     runs-on: ubuntu-24.04
     steps:

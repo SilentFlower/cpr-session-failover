@@ -43,6 +43,23 @@ fn register(policy: &mut Policy, id: &str, session: &str, blocked: Option<&str>)
     ));
 }
 
+fn short_wait() -> Config {
+    Config {
+        wait_seconds: 5,
+        ..Config::default()
+    }
+}
+
+#[test]
+fn absent_wait_uses_fifteen_seconds_and_explicit_configuration_is_preserved() {
+    let defaults: Config = serde_json::from_str("{}").unwrap();
+    assert_eq!(defaults.wait_seconds, 15);
+    let configured: Config =
+        serde_json::from_str(r#"{"waitSeconds":5,"historyLimit":200}"#).unwrap();
+    assert_eq!(configured.wait_seconds, 5);
+    assert!(configured.validate().is_ok());
+}
+
 #[test]
 fn waits_for_threshold_then_chooses_available_account() {
     let mut policy = Policy::default();
@@ -54,14 +71,14 @@ fn waits_for_threshold_then_chooses_available_account() {
         Action::Delegate
     ));
     assert!(matches!(
-        policy.schedule(&input, &config, 5099, 5099),
+        policy.schedule(&input, &config, 15099, 15099),
         Action::Delegate
     ));
-    let Action::Propose(record) = policy.schedule(&input, &config, 5100, 5100) else {
+    let Action::Propose(record) = policy.schedule(&input, &config, 15100, 15100) else {
         panic!("达到阈值应提出迁移");
     };
     assert_eq!(record.proposed_account_id.as_deref(), Some("B"));
-    assert_eq!(record.scheduler_wait_ms, 5000);
+    assert_eq!(record.scheduler_wait_ms, 15000);
     assert_eq!(record.binding_changed, None);
 }
 
@@ -70,7 +87,7 @@ fn concurrent_waiters_follow_one_migration_and_restart_wait_clock() {
     let mut policy = Policy::default();
     register(&mut policy, "r1", "s1", None);
     register(&mut policy, "r2", "s1", None);
-    let config = Config::default();
+    let config = short_wait();
     policy.schedule(&input("r1"), &config, 0, 0);
     policy.schedule(&input("r2"), &config, 0, 0);
     let Action::Propose(first) = policy.schedule(&input("r1"), &config, 5000, 5000) else {
@@ -96,25 +113,24 @@ fn cancellation_and_failed_persistence_release_reservation() {
     let mut policy = Policy::default();
     for id in ["r1", "r2"] {
         register(&mut policy, id, "s1", None);
-        policy.schedule(&input(id), &Config::default(), 0, 0);
+        policy.schedule(&input(id), &short_wait(), 0, 0);
     }
-    let Action::Propose(record) = policy.schedule(&input("r1"), &Config::default(), 5000, 5000)
-    else {
+    let Action::Propose(record) = policy.schedule(&input("r1"), &short_wait(), 5000, 5000) else {
         panic!("应提出迁移");
     };
     policy.abandon("r1", "different-id");
     assert!(matches!(
-        policy.schedule(&input("r2"), &Config::default(), 5001, 5001),
+        policy.schedule(&input("r2"), &short_wait(), 5001, 5001),
         Action::Delegate
     ));
     policy.abandon("r1", &record.id);
     assert!(matches!(
-        policy.schedule(&input("r2"), &Config::default(), 5002, 5002),
+        policy.schedule(&input("r2"), &short_wait(), 5002, 5002),
         Action::Propose(_)
     ));
     policy.finish("r2");
     assert!(matches!(
-        policy.schedule(&input("r1"), &Config::default(), 5003, 5003),
+        policy.schedule(&input("r1"), &short_wait(), 5003, 5003),
         Action::Propose(_)
     ));
 }
@@ -124,18 +140,18 @@ fn contention_on_new_account_can_return_to_selection() {
     let mut policy = Policy::default();
     register(&mut policy, "r1", "s1", None);
     let mut input = input("r1");
-    policy.schedule(&input, &Config::default(), 0, 0);
+    policy.schedule(&input, &short_wait(), 0, 0);
     assert!(matches!(
-        policy.schedule(&input, &Config::default(), 5000, 5000),
+        policy.schedule(&input, &short_wait(), 5000, 5000),
         Action::Propose(_)
     ));
     input.candidates[1].available = false;
     input.candidates.push(candidate("C", true, 0, 3));
     assert!(matches!(
-        policy.schedule(&input, &Config::default(), 5100, 5100),
+        policy.schedule(&input, &short_wait(), 5100, 5100),
         Action::CandidateUnavailable { .. }
     ));
-    let Action::Propose(record) = policy.schedule(&input, &Config::default(), 5200, 5200) else {
+    let Action::Propose(record) = policy.schedule(&input, &short_wait(), 5200, 5200) else {
         panic!("候选失效后应允许重新评估");
     };
     assert_eq!(record.proposed_account_id.as_deref(), Some("C"));
@@ -145,15 +161,15 @@ fn contention_on_new_account_can_return_to_selection() {
 fn native_continuation_only_records_block_and_never_picks_another_account() {
     let mut policy = Policy::default();
     register(&mut policy, "r1", "s1", Some("native_continuation"));
-    policy.schedule(&input("r1"), &Config::default(), 0, 0);
-    let Action::RecordOnly(record) = policy.schedule(&input("r1"), &Config::default(), 5000, 5000)
+    policy.schedule(&input("r1"), &short_wait(), 0, 0);
+    let Action::RecordOnly(record) = policy.schedule(&input("r1"), &short_wait(), 5000, 5000)
     else {
         panic!("原生续写等待达到阈值应留下保护记录");
     };
     assert_eq!(record.reason, "native_continuation");
     assert!(record.proposed_account_id.is_none());
     assert!(matches!(
-        policy.schedule(&input("r1"), &Config::default(), 10000, 10000),
+        policy.schedule(&input("r1"), &short_wait(), 10000, 10000),
         Action::Delegate
     ));
 }
@@ -167,15 +183,15 @@ fn unavailable_pool_and_missing_middleware_do_not_force_selection() {
         .candidates
         .iter_mut()
         .for_each(|c| c.available = false);
-    policy.schedule(&input, &Config::default(), 0, 0);
+    policy.schedule(&input, &short_wait(), 0, 0);
     assert!(matches!(
-        policy.schedule(&input, &Config::default(), 9000, 9000),
+        policy.schedule(&input, &short_wait(), 9000, 9000),
         Action::Delegate
     ));
     input.request_id = "unregistered".into();
     input.candidates[1].available = true;
     assert!(matches!(
-        policy.schedule(&input, &Config::default(), 10000, 10000),
+        policy.schedule(&input, &short_wait(), 10000, 10000),
         Action::Delegate
     ));
 }
@@ -185,18 +201,18 @@ fn selection_respects_normalized_load_and_key_scoped_session_isolation() {
     let mut policy = Policy::default();
     for (id, session) in [("r1", "key-one-session"), ("r2", "key-two-session")] {
         register(&mut policy, id, session, None);
-        policy.schedule(&input(id), &Config::default(), 0, 0);
+        policy.schedule(&input(id), &short_wait(), 0, 0);
     }
     let mut input = input("r1");
     input.candidates[1] = candidate("B", true, 2, 3);
     input.candidates.push(candidate("C", true, 2, 10));
-    let Action::Propose(record) = policy.schedule(&input, &Config::default(), 5000, 5000) else {
+    let Action::Propose(record) = policy.schedule(&input, &short_wait(), 5000, 5000) else {
         panic!("应提出迁移");
     };
     assert_eq!(record.proposed_account_id.as_deref(), Some("C"));
     input.request_id = "r2".into();
     assert!(matches!(
-        policy.schedule(&input, &Config::default(), 5000, 5000),
+        policy.schedule(&input, &short_wait(), 5000, 5000),
         Action::Propose(_)
     ));
 }
@@ -206,20 +222,20 @@ fn upstream_time_is_not_counted_as_later_account_selection_wait() {
     let mut policy = Policy::default();
     register(&mut policy, "r1", "s1", None);
     let mut input = input("r1");
-    policy.schedule(&input, &Config::default(), 0, 0);
+    policy.schedule(&input, &short_wait(), 0, 0);
     assert_eq!(policy.admitted("r1", 1, "A", 5), None);
     // 模拟账号 A 已经执行上游 60 秒；新的选号尝试必须再等待完整阈值
     input.attempt_index = 2;
     assert!(matches!(
-        policy.schedule(&input, &Config::default(), 60_005, 60_005),
+        policy.schedule(&input, &short_wait(), 60_005, 60_005),
         Action::Delegate
     ));
     assert!(matches!(
-        policy.schedule(&input, &Config::default(), 65_004, 65_004),
+        policy.schedule(&input, &short_wait(), 65_004, 65_004),
         Action::Delegate
     ));
     assert!(matches!(
-        policy.schedule(&input, &Config::default(), 65_005, 65_005),
+        policy.schedule(&input, &short_wait(), 65_005, 65_005),
         Action::Propose(_)
     ));
 }

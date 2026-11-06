@@ -11,11 +11,13 @@
 1. 打开 CPR「插件管理」→「安装」→「GitHub」
 2. 仓库填写 `SilentFlower/cpr-session-failover`，选择稳定版附件
 3. 核对附件和 SHA-256，接受完整信任后安装
-4. 在设置中配置等待阈值，默认 **5 秒**；本体应保留账号排队名额，最终排队超时必须大于此值
+4. 在设置中配置等待阈值，默认 **15 秒**；本体应保留账号排队名额，最终排队超时必须大于此值
 
 也可以从 [Releases](https://github.com/SilentFlower/cpr-session-failover/releases) 下载 `.tar.gz` 上传安装。GitHub 自动生成的源码压缩包不是安装包
 
 插件命中的模型请求会使用请求级严格绑定，不改变全局设置。默认作用范围不限 Key，可在「高级设置」收窄到指定 Key、分组或模型；请求中间件、attempt 和账号调度须使用相同范围
+
+升级保留现有配置，已保存的 5 秒不会被覆盖。要采用 15 秒，请在「插件参数」修改迁移等待阈值并保存
 
 ## 等待与改绑
 
@@ -51,14 +53,20 @@
 
 | 参数 | 默认 | 范围 | 含义 |
 | --- | ---: | --- | --- |
-| `waitSeconds` | 5 | 1～110 秒 | 本次账号选择的持续等待阈值，须小于本体总排队超时 |
+| `waitSeconds` | 15 | 1～110 秒 | 本次账号选择的持续等待阈值，须小于本体总排队超时 |
 | `historyLimit` | 200 | 10～500 | 最大保留记录数，同时受 240 KiB 历史字节预算限制 |
 
 CPR 未公开真实入队起点和绑定版本，纯插件使用首次选号后的持续等待计时；触发时刻还受宿主重评估、RPC 和日志保存耗时影响。协调范围是同一插件进程；多个 CPR 节点之间的绑定一致性由宿主原子操作保证，但插件不提供跨节点迁移去重
 
 ## 查看切换记录
 
-在运行 CPR 的环境执行：
+从插件详情或左侧插件导航打开「会话切换记录」，支持按请求 ID 精确查询、按改绑结果筛选、分页和手动刷新。展开记录可查看完整账号 ID、会话摘要、等待耗时及错误分类
+
+[浅色页面](https://github.com/SilentFlower/cpr-session-failover/releases/download/v0.2.0/records-light.png) · [深色页面](https://github.com/SilentFlower/cpr-session-failover/releases/download/v0.2.0/records-dark.png) · [记录详情](https://github.com/SilentFlower/cpr-session-failover/releases/download/v0.2.0/records-details.png)，截图使用隔离实例中的模拟记录
+
+页面时间由插件后端按 UTC 显示。仅在提出迁移或触发迁移保护时记录，直接取得账号的普通请求不会出现在列表中。统计仅覆盖当前查询到的保留历史，不能代表累计切换次数
+
+也可在运行 CPR 的环境执行：
 
 ```bash
 codex-proxy-rs plugin <配置ID> history --limit 50

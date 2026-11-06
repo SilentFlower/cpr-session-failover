@@ -133,12 +133,10 @@ impl Host {
                     generation: 1,
                     incarnation: "test_incarnation".into(),
                     stage,
-                    timeout_ms: if stage == Stage::Scheduling {
-                        2_000
-                    } else if stage == Stage::Observation {
-                        5_000
-                    } else {
-                        30_000
+                    timeout_ms: match stage {
+                        Stage::Registration => 5_000,
+                        Stage::Scheduling | Stage::Observation => 2_000,
+                        _ => 30_000,
                     },
                     resource_stream: false,
                     resource_scope_id: format!("scope_{id}"),
@@ -385,6 +383,27 @@ fn diagnostic_zip() -> Vec<u8> {
 #[tokio::test]
 async fn migration_records_actual_admission_and_survives_restart() {
     let mut host = Host::start(None, 0).await;
+    host.call(
+        1,
+        Stage::Registration,
+        "management.register",
+        None,
+        json!({}),
+        vec![],
+    )
+    .await;
+    let (_, registration) = host.result(1).await;
+    let registration: Value = serde_json::from_slice(&registration).unwrap();
+    let entry = registration["pages"][0]["entry"].as_str().unwrap();
+    let manifest = Manifest::from_author_slice(include_bytes!("../plugin.json")).unwrap();
+    assert!(manifest.resources.contains_key(entry));
+    assert!(
+        registration["resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|resource| resource["path"] == entry)
+    );
     host.model(10, "req_one", false).await;
     host.model(11, "req_two", false).await;
     assert_eq!(host.schedule(20, "req_one").await["decision"], "delegate");
@@ -451,6 +470,16 @@ async fn migration_records_actual_admission_and_survives_restart() {
     assert_eq!(response["status"], 200);
     let history: Value = serde_json::from_slice(&payload).unwrap();
     assert_eq!(history["records"][0]["requestId"], "req_one");
+    assert!(
+        history["records"][0]["decisionTimeUtc"]
+            .as_str()
+            .unwrap()
+            .ends_with('Z')
+    );
+    restarted.call(62, Stage::Management, "management.handle", None, json!({"method":"GET","path":"history","query":"limit=10&requestId=req_other","content_type":null,"headers":[]}), vec![]).await;
+    let (_, payload) = restarted.result(62).await;
+    let history: Value = serde_json::from_slice(&payload).unwrap();
+    assert!(history["records"].as_array().unwrap().is_empty());
     restarted.stop().await;
 }
 

@@ -23,7 +23,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            wait_seconds: 5,
+            wait_seconds: 15,
             history_limit: 200,
         }
     }
