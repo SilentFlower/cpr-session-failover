@@ -1,4 +1,4 @@
-import { isObject, request } from '../request'
+import { isObject, request, writeRequest } from '../request'
 
 /** 与 CPR 原生实例共用的阶段规则，开关以规则是否存在表示 */
 export interface Binding {
@@ -77,12 +77,13 @@ export async function getSettings(): Promise<Settings> {
  * @param source 最近读取的版本
  * @param configuration 当前参数草稿
  * @param bindings 当前阶段规则草稿
- * @return 保存确认，失败时需重新读取而非自动重试
+ * @return 保存确认，结果未知时通过宿主刷新核对而不自动重试
  */
 export async function saveSettings(source: Settings, configuration: Settings['configuration'], bindings: Binding[]): Promise<void> {
-  const value = await request('settings', new URLSearchParams(), { expectedRevision: source.revision, configuration, bindings })
-  if (!isObject(value) || value.saved !== true)
-    throw new Error('无法确认保存结果，请重新读取设置')
+  await writeRequest('settings', { expectedRevision: source.revision, configuration, bindings }, (value) => {
+    if (!isObject(value) || value.saved !== true)
+      throw new Error('无法确认保存结果，请点击右上角「刷新页面」后核对')
+  })
 }
 
 /**

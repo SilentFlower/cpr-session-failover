@@ -11,14 +11,14 @@
 1. 打开 CPR「插件管理」→「安装」→「GitHub」
 2. 仓库填写 `SilentFlower/cpr-session-failover`，选择稳定版附件
 3. 核对附件和 SHA-256，接受完整信任后安装
-4. 从左侧插件导航打开「会话切换记录」，在顶部配置等待阈值，默认 **15 秒**
+4. 从左侧插件导航打开「会话切换记录」，点击工具栏的「插件设置」配置等待阈值，默认 **15 秒**
 5. 本体应保留账号排队名额，最终排队超时必须大于此值
 
 也可以从 [Releases](https://github.com/SilentFlower/cpr-session-failover/releases) 下载 `.tar.gz` 上传安装。GitHub 自动生成的源码压缩包不是安装包
 
 插件命中的模型请求会使用请求级严格绑定，不改变全局设置。默认作用范围不限 Key，可在「高级设置」收窄到指定 Key、分组或模型；请求中间件、attempt 和账号调度须使用相同范围
 
-升级保留现有配置，已保存的 5 秒不会被覆盖。要采用 15 秒，在扩展页顶部修改迁移等待阈值并保存
+升级保留现有配置，已保存的 5 秒不会被覆盖。要采用 15 秒，在扩展页的「插件设置」中修改迁移等待阈值并保存
 
 ## 等待与改绑
 
@@ -56,14 +56,14 @@
 | --- | ---: | --- | --- |
 | `waitSeconds` | 15 | 1～110 秒 | 本次账号选择的持续等待阈值，须小于本体总排队超时 |
 
-扩展页顶部的「插件设置」与 CPR 原生设置共用同一份配置。「高级设置」可调整三个阶段的开关、执行顺序、失败处理，以及 Key、分组、模型和适用阶段的 Provider 范围
+工具栏按钮打开的「插件设置」弹窗与 CPR 原生设置共用同一份配置。「高级设置」标签可调整三个阶段的开关、执行顺序、失败处理，以及 Key、分组、模型和适用阶段的 Provider 范围
 
 - 执行顺序越小越先执行，0 为默认值，只比较同阶段处理器
 - 失败处理为「拒绝请求」或「继续下一个处理器」，沿用 CPR 原生规则
 - 空范围表示不限，同一维度内任选其一，不同维度同时满足
 - 完整迁移与记录需要三个阶段同时启用，且请求范围相互覆盖
-- 保存会让 CPR 重新发布当前插件并刷新扩展页，不会清除历史
-- 并发修改会拒绝覆盖，请重新读取设置后确认，写入结果不确定时也先重新读取
+- 保存成功后显示确认，点击页面标题右侧的「刷新页面」按钮重新连接，再继续查询或修改，已有历史保留
+- 并发修改会拒绝覆盖，可重新读取设置后确认，写入结果不确定时须刷新页面核对，不自动重试
 
 CPR 未公开真实入队起点和绑定版本，纯插件使用首次选号后的持续等待计时；触发时刻还受宿主重评估、RPC 和日志保存耗时影响。协调范围是同一插件进程；多个 CPR 节点之间的绑定一致性由宿主原子操作保证，但插件不提供跨节点迁移去重
 
@@ -71,7 +71,7 @@ CPR 未公开真实入队起点和绑定版本，纯插件使用首次选号后�
 
 从插件详情或左侧插件导航打开「会话切换记录」，支持按请求 ID 精确查询、按改绑结果筛选、分页和手动刷新。展开记录可查看完整账号 ID、会话摘要、等待耗时及错误分类
 
-[浅色页面](https://github.com/SilentFlower/cpr-session-failover/releases/download/v0.3.0/settings-light.png) · [深色页面](https://github.com/SilentFlower/cpr-session-failover/releases/download/v0.3.0/settings-dark.png) · [高级设置](https://github.com/SilentFlower/cpr-session-failover/releases/download/v0.3.0/settings-advanced.png) · [记录详情](https://github.com/SilentFlower/cpr-session-failover/releases/download/v0.3.0/records-details.png)，截图使用隔离实例中的模拟记录
+[记录页](https://github.com/SilentFlower/cpr-session-failover/releases/download/v0.3.1/records-light.png) · [设置弹窗](https://github.com/SilentFlower/cpr-session-failover/releases/download/v0.3.1/settings-dialog.png) · [高级设置](https://github.com/SilentFlower/cpr-session-failover/releases/download/v0.3.1/settings-advanced.png) · [记录详情](https://github.com/SilentFlower/cpr-session-failover/releases/download/v0.3.1/records-details.png)，截图使用隔离实例中的模拟记录
 
 页面时间由插件后端按 UTC 显示。仅在提出迁移或触发迁移保护时记录，直接取得账号的普通请求不会出现在列表中。匹配总数覆盖所有保留历史，已确认改绑数量仅统计当前页，均不能代表真实累计切换次数
 

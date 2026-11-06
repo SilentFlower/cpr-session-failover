@@ -1,13 +1,20 @@
 <script setup lang="ts">
 import type { Binding, Definition, Resource, Settings } from '../api/modules/settings'
-import { ZButton, ZCard, ZCheckbox, ZFormItem, ZInputNumber, ZSelect, ZSwitch, ZTextarea } from '@codex-proxy/ui'
-import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef } from 'vue'
+import { ZButton, ZCheckbox, ZDialog, ZFormItem, ZInputNumber, ZSegmented, ZSelect, ZSwitch, ZTextarea } from '@codex-proxy/ui'
+import { computed, onBeforeUnmount, reactive, ref, shallowRef, watch } from 'vue'
 import { getResources, getSettings, saveSettings } from '../api/modules/settings'
+import { configurationWriteState } from '../api/request'
 
+const open = defineModel<boolean>({ required: true })
+const section = ref('parameters')
+const sections = [
+  { value: 'parameters', label: '插件参数' },
+  { value: 'advanced', label: '高级设置' },
+]
 const source = shallowRef<Settings>()
 const draft = ref<{ configuration: Settings['configuration'], bindings: Binding[] }>()
 const loading = ref(false)
-const saving = ref(false)
+const saving = computed(() => configurationWriteState.value === 'saving')
 const error = ref('')
 const notice = ref('')
 const restricted = ref(new Set<string>())
@@ -31,8 +38,8 @@ const failures = [
   { value: 'reject', label: '拒绝请求' },
   { value: 'delegate', label: '继续下一个处理器' },
 ]
-const disabled = computed(() => loading.value || saving.value)
-const dirty = computed(() => source.value && draft.value && JSON.stringify(draft.value) !== JSON.stringify({ configuration: source.value.configuration, bindings: source.value.bindings }))
+const disabled = computed(() => loading.value || configurationWriteState.value !== 'ready')
+const dirty = computed(() => configurationWriteState.value === 'ready' && source.value && draft.value && JSON.stringify(draft.value) !== JSON.stringify({ configuration: source.value.configuration, bindings: source.value.bindings }))
 const valid = computed(() => {
   if (!draft.value || !source.value)
     return false
@@ -188,73 +195,62 @@ async function loadResources(kind: 'keys' | 'groups', more = false) {
       catalog.loading = false
   }
 }
-function openAdvanced(event: Event) {
-  if ((event.target as HTMLDetailsElement).open && restricted.value.size) {
+watch([open, section], ([visible, current]) => {
+  if (visible && current === 'advanced' && restricted.value.size && configurationWriteState.value === 'ready') {
     void loadResources('keys')
     void loadResources('groups')
   }
-}
+})
+
 async function save() {
   if (!source.value || !draft.value || disabled.value || !valid.value || !dirty.value)
     return
-  saving.value = true
   error.value = ''
   notice.value = ''
   try {
     await saveSettings(source.value, draft.value.configuration, draft.value.bindings)
     if (!mounted)
       return
-    notice.value = '已保存，正在重新加载插件页面'
-    // 保存会发布新实例，下一次旧目标查询由宿主识别并刷新 iframe
-    // 不导航或重载隔离页面，否则会触发宿主的页面保护
-    const current = await getSettings()
-    if (mounted) {
-      source.value = current
-      resetDraft()
-      notice.value = '设置已保存'
-    }
+    // 已确认保存后保留结果，旧页面目标不能继续发起管理查询
+    notice.value = '设置已保存并生效，点击右上角「刷新页面」继续操作'
   }
   catch (cause) {
     if (mounted) {
-      error.value = cause instanceof Error
-        ? cause.message
-        : '无法确认保存结果，请重新读取设置'
+      error.value = configurationWriteState.value === 'uncertain'
+        ? '无法确认保存结果，请点击右上角「刷新页面」后核对'
+        : cause instanceof Error
+          ? cause.message
+          : '插件设置保存失败'
     }
   }
-  finally {
-    if (mounted)
-      saving.value = false
-  }
 }
-onMounted(() => void load())
+watch(open, (visible) => {
+  if (visible && configurationWriteState.value === 'ready') {
+    section.value = 'parameters'
+    void load()
+  }
+})
 onBeforeUnmount(() => {
   mounted = false
 })
 </script>
 
 <template>
-  <ZCard>
+  <ZDialog v-model="open" title="插件设置" width="48rem" :show-close="!saving" :close-on-click-modal="!saving" :close-on-press-escape="!saving">
     <div class="mb-4 flex flex-wrap items-center gap-3">
-      <span class="font-emphasis">插件设置</span>
       <span v-if="dirty" class="text-z-xs text-z-text-secondary">有未保存修改</span>
-      <ZButton class="sm:ml-auto" size="small" :loading="loading" :disabled="saving" @click="load">
+      <ZButton class="sm:ml-auto" size="small" :loading="loading" :disabled="disabled" @click="load">
         重新读取设置
       </ZButton>
     </div>
-    <div v-if="error" role="alert" class="mb-4 rounded-z bg-z-error-container p-3 text-z-error-on-container">
-      {{ error }}
-    </div>
-    <div v-if="notice" role="status" class="mb-4 text-z-sm text-z-text-secondary">
-      {{ notice }}
-    </div>
-    <form v-if="draft && source" class="space-y-4" @submit.prevent="save">
-      <ZFormItem label="迁移等待阈值（秒）" description="从首次选号开始计时，达到阈值尝试换号，须小于本体总排队超时">
-        <ZInputNumber v-model="draft.configuration.waitSeconds" aria-label="迁移等待阈值（秒）" :min="1" :max="110" :precision="0" :disabled="disabled" class="w-full sm:max-w-64" />
-      </ZFormItem>
-      <details class="rounded-z bg-z-fill-alter p-4" @toggle="openAdvanced">
-        <summary class="cursor-pointer font-emphasis">
-          高级设置
-        </summary>
+    <form v-if="draft && source" id="session-failover-settings" class="space-y-4" @submit.prevent="save">
+      <ZSegmented v-model="section" :options="sections" aria-label="设置分类" :disabled="saving" class="w-fit max-w-full" />
+      <div v-show="section === 'parameters'">
+        <ZFormItem label="迁移等待阈值（秒）" description="从首次选号开始计时，达到阈值尝试换号，须小于本体总排队超时">
+          <ZInputNumber v-model="draft.configuration.waitSeconds" aria-label="迁移等待阈值（秒）" :min="1" :max="110" :precision="0" :disabled="disabled" class="w-full sm:max-w-64" />
+        </ZFormItem>
+      </div>
+      <div v-show="section === 'advanced'" class="rounded-z bg-z-fill-alter p-4">
         <p class="my-3 text-z-xs text-z-text-secondary">
           顺序数值越小越先执行，0 为默认值，同阶段内生效
         </p>
@@ -301,19 +297,24 @@ onBeforeUnmount(() => {
         <p v-if="partial" class="mt-3 text-z-sm text-z-warning">
           完整换号与记录需要三个阶段同时启用，并确保请求范围相互覆盖
         </p>
-      </details>
-      <div class="flex flex-wrap items-center gap-3">
-        <ZButton type="primary" native-type="submit" :loading="saving" :disabled="loading || !dirty || !valid">
-          保存设置
-        </ZButton>
-        <ZButton :disabled="disabled || !dirty" @click="resetDraft">
-          撤销修改
-        </ZButton>
-        <span class="text-z-xs text-z-text-secondary">与 CPR 原生插件设置同步，保存后重新加载页面</span>
       </div>
     </form>
     <p v-else-if="loading" role="status" class="text-z-sm text-z-text-secondary">
       正在读取插件设置
     </p>
-  </ZCard>
+    <template #footer>
+      <div v-if="error" role="alert" class="w-full rounded-z bg-z-error-container p-3 text-z-error-on-container">
+        {{ error }}
+      </div>
+      <div v-if="notice" role="status" class="w-full text-z-sm text-z-text-secondary">
+        {{ notice }}
+      </div>
+      <ZButton :disabled="saving" @click="open = false">
+        {{ configurationWriteState === 'ready' ? '取消' : '关闭' }}
+      </ZButton>
+      <ZButton v-if="configurationWriteState === 'ready' || saving" type="primary" native-type="submit" form="session-failover-settings" :loading="saving" :disabled="loading || !dirty || !valid">
+        保存设置
+      </ZButton>
+    </template>
+  </ZDialog>
 </template>

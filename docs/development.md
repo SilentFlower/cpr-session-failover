@@ -37,10 +37,14 @@ CPR_PLUGIN_CLI=/path/to/cpr-plugin bash scripts/package.sh
 | `main.rs` | SDK 处理器组合、请求级严格绑定、取消回收、历史查询和维护 |
 | `frontend/src/api/` | 宿主桥请求封装、历史与设置路由的响应合同校验 |
 | `frontend/src/App.vue` | 历史筛选、分页、刷新与展开详情 |
-| `frontend/src/components/SettingsPanel.vue` | 参数和阶段规则编辑、原生目录选择与配置发布后的重新加载 |
+| `frontend/src/components/SettingsDialog.vue` | 按需打开参数和阶段规则、原生目录选择与保存结果确认 |
 | `frontend/src/presenter.ts` | 阶段、改绑证据及耗时的纯展示投影 |
 
 页面在宿主隔离 iframe 内运行，仅通过 `window.codexProxyPlugin.request` 访问当前实例的 `history`、`settings` 和 `resources` 路由，不使用管理 Cookie 或直接请求宿主 HTTP。页面资源、主题和尺寸由宿主加载与同步，生产包不包含模拟数据
+
+设置复用公开 UI 的 `ZDialog` 与 `ZSegmented`，默认页面只展示记录，打开弹窗才读取设置。页面桥目标固定到实例 revision，保存配置会使旧目标失效。请求层在写入前阻止新读取并等待在途读取结束，成功后停止所有旧目标请求，由用户通过宿主标题旁的刷新按钮重新连接，不通过 409 或 iframe 导航触发刷新
+
+明确的 400／409 拒绝允许修正或重新读取，其他失败和无效保存响应保持结果未知，刷新后核对实际配置，不重试写入。配置发布状态由请求层持有，设置弹窗和记录查询共用这一份状态
 
 `pnpm --dir frontend dev` 提供源码预览，业务查询需要宿主桥。已安装插件读取包内资源，源码修改后必须重新构建、打包并切换版本
 

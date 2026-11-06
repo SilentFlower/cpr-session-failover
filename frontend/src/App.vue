@@ -5,10 +5,14 @@ import { ZButton, ZCard, ZConfigProvider, ZEmpty, ZInput, ZPagination, ZSelect, 
 import { zhHans } from '@codex-proxy/ui/locale'
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { getHistory } from './api/modules/history'
+import { configurationWriteState } from './api/request'
 import RecordDetails from './components/RecordDetails.vue'
-import SettingsPanel from './components/SettingsPanel.vue'
+import SettingsDialog from './components/SettingsDialog.vue'
 import { bindingResult, duration, outcomeText, relativeTime, stageText } from './presenter'
 
+const settingsOpen = ref(false)
+const requestsBlocked = computed(() => configurationWriteState.value !== 'ready')
+const reconnectRequired = computed(() => ['saved', 'uncertain'].includes(configurationWriteState.value))
 const snapshot = shallowRef<HistoryResponse>()
 const requestId = ref('')
 const appliedRequestId = ref('')
@@ -88,7 +92,7 @@ watch(pageSize, () => void load(appliedRequestId.value, true))
 watch(page, () => void load(appliedRequestId.value))
 
 async function load(id: string, resetPage = false) {
-  if (loading.value)
+  if (loading.value || requestsBlocked.value)
     return
   loading.value = true
   error.value = ''
@@ -147,25 +151,32 @@ onBeforeUnmount(() => {
 <template>
   <ZConfigProvider :locale="zhHans">
     <main class="space-y-4 text-z-text">
-      <SettingsPanel />
-      <ZCard>
+      <SettingsDialog v-model="settingsOpen" />
+      <p v-if="reconnectRequired && !settingsOpen" role="status" class="rounded-z bg-z-info-container p-3 text-z-sm text-z-info-on-container">
+        {{ configurationWriteState === 'saved' ? '设置已保存并生效' : '保存结果待确认' }}，点击右上角「刷新页面」继续操作
+      </p>
+      <!-- 隔离页高度跟随正文，打开弹窗时收起背景列表，使弹窗定位在宿主可视区域 -->
+      <ZCard v-show="!settingsOpen">
         <form class="flex flex-wrap items-center gap-3" @submit.prevent="search">
           <ZInput
             v-model="requestId"
             aria-label="请求 ID"
             placeholder="按请求 ID 精确查询"
             class="w-full sm:max-w-80"
-            :disabled="loading"
+            :disabled="loading || requestsBlocked"
             maxlength="256"
           />
-          <ZSelect v-model="resultFilter" aria-label="改绑结果" :disabled="loading" :options="resultOptions" class="w-full sm:w-48" />
-          <ZButton type="primary" native-type="submit" :disabled="loading">
+          <ZSelect v-model="resultFilter" aria-label="改绑结果" :disabled="loading || requestsBlocked" :options="resultOptions" class="w-full sm:w-48" />
+          <ZButton type="primary" native-type="submit" :disabled="loading || requestsBlocked">
             查询
           </ZButton>
-          <ZButton :disabled="loading || (!requestId && resultFilter === 'all' && !appliedRequestId)" @click="reset">
+          <ZButton :disabled="loading || requestsBlocked || (!requestId && resultFilter === 'all' && !appliedRequestId)" @click="reset">
             重置
           </ZButton>
-          <ZButton :loading="loading" class="sm:ml-auto" @click="load(appliedRequestId, true)">
+          <ZButton :disabled="requestsBlocked" class="sm:ml-auto" @click="settingsOpen = true">
+            插件设置
+          </ZButton>
+          <ZButton :loading="loading" :disabled="requestsBlocked" @click="load(appliedRequestId, true)">
             刷新
           </ZButton>
         </form>
@@ -178,13 +189,13 @@ onBeforeUnmount(() => {
         </div>
       </ZCard>
 
-      <ZCard>
+      <ZCard v-show="!settingsOpen">
         <p v-if="snapshot?.storage.lastWriteError" role="alert" class="mb-4 rounded-z bg-z-warning-container p-3 text-z-warning-on-container">
           {{ snapshot.storage.lastWriteError }}
         </p>
         <div v-if="error" role="alert" class="mb-4 flex flex-wrap items-center gap-3 rounded-z bg-z-error-container p-3 text-z-error-on-container">
           <span>{{ error }}</span>
-          <ZButton size="small" :disabled="loading" @click="load(appliedRequestId, true)">
+          <ZButton size="small" :disabled="loading || requestsBlocked" @click="load(appliedRequestId, true)">
             重新读取
           </ZButton>
         </div>
@@ -264,7 +275,7 @@ onBeforeUnmount(() => {
           v-model:page-size="pageSize"
           :total="total"
           :page-sizes="[10, 20, 50]"
-          :disabled="loading"
+          :disabled="loading || requestsBlocked"
           class="mt-4"
         />
       </ZCard>
