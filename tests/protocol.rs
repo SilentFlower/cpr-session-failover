@@ -198,6 +198,20 @@ impl Host {
                 "host.middleware.next" => {
                     self.next.insert(self.logical_id(parent_id), (id, params));
                 }
+                "host.data.accounts.list" => {
+                    assert_eq!(params, json!({}));
+                    let query: Value = serde_json::from_slice(&frame.payload).unwrap();
+                    assert_eq!(query["limit"], 200);
+                    let payload = serde_json::to_vec(&json!({
+                        "schema_version":1,
+                        "accounts":(["A","B"].into_iter().map(|account| json!({
+                            "account_id":account,"provider_id":"openai","name":format!("账号 {account}"),
+                            "email":null,"enabled":true,"group_ids":[],"updated_at_ms":0
+                        })).collect::<Vec<_>>()),
+                        "next_cursor":null
+                    })).unwrap();
+                    self.respond(id, json!({}), payload).await;
+                }
                 "host.state.get" => {
                     let key = (
                         params["namespace"].as_str().unwrap().to_owned(),
@@ -578,6 +592,9 @@ async fn migration_records_actual_admission_and_survives_restart() {
     let command: Value = serde_json::from_slice(&payload).unwrap();
     let history: Value = serde_json::from_str(command["stdout"].as_str().unwrap()).unwrap();
     assert_eq!(history["records"][0]["bindingChanged"], true);
+    assert_eq!(history["records"][0]["fromAccountName"], "账号 A");
+    assert_eq!(history["records"][0]["actualAccountName"], "账号 B");
+    assert_eq!(history["records"][0]["proposedAccountName"], "账号 B");
     restarted.call(61, Stage::Management, "management.handle", None, json!({"method":"GET","path":"history","query":"limit=10&requestId=req_one","content_type":null,"headers":[]}), vec![]).await;
     let (response, payload) = restarted.result(61).await;
     assert_eq!(response["status"], 200);

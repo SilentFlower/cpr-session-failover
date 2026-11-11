@@ -270,14 +270,14 @@ onBeforeUnmount(() => {
               <dt class="text-z-text-secondary">
                 {{ row.fromAccountId || !row.originalAccountId ? '前绑定' : '续写原账号' }}
               </dt>
-              <dd class="m-0 truncate font-mono" :title="row.fromAccountId ?? row.originalAccountId">
-                {{ row.fromAccountId ?? row.originalAccountId ?? '缺少证据' }}
+              <dd class="m-0 truncate font-emphasis" :title="row.fromAccountId ?? row.originalAccountId">
+                {{ row.fromAccountId ? (row.fromAccountName ?? row.fromAccountId) : (row.originalAccountName ?? row.originalAccountId ?? '缺少证据') }}
               </dd>
               <dt class="text-z-text-secondary">
                 实际取得
               </dt>
-              <dd class="m-0 truncate font-mono" :title="row.actualAccountId ?? undefined">
-                {{ row.actualAccountId ?? '尚未确认' }}
+              <dd class="m-0 truncate font-emphasis" :title="row.actualAccountId ?? undefined">
+                {{ row.actualAccountName ?? row.actualAccountId ?? '尚未确认' }}
               </dd>
             </dl>
           </template>

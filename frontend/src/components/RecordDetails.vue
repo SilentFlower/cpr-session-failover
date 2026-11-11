@@ -5,20 +5,45 @@ import { duration, outcomeText, reasonText, stageText } from '../presenter'
 
 const props = defineProps<{ record: HistoryRecord }>()
 
+/**
+ * 在详情中保留账号名称与完整 ID
+ * @param name 宿主当前保存的名称
+ * @param id 历史中记录的账号 ID
+ * @param empty 缺少账号事实时的说明
+ * @return 可直接显示的账号信息
+ */
+function account(name: string | null, id: string | null | undefined, empty = '未知') {
+  return name && id
+    ? `${name}（${id}）`
+    : id ?? empty
+}
+
 const fields = computed(() => [
   { label: '请求 ID', value: props.record.requestId },
   {
     label: '尝试序号',
     value: String(props.record.attemptIndex),
   },
-  { label: '前绑定账号', value: props.record.fromAccountId ?? '未知' },
+  {
+    label: '前绑定账号',
+    value: account(props.record.fromAccountName, props.record.fromAccountId, '未知'),
+  },
   ...(props.record.originalAccountId
     ? [
-        { label: '续写原账号', value: props.record.originalAccountId },
+        {
+          label: '续写原账号',
+          value: account(props.record.originalAccountName, props.record.originalAccountId),
+        },
       ]
     : []),
-  { label: '计划账号', value: props.record.proposedAccountId ?? '无' },
-  { label: '实际取得账号', value: props.record.actualAccountId ?? '尚未确认' },
+  {
+    label: '计划账号',
+    value: account(props.record.proposedAccountName, props.record.proposedAccountId, '无'),
+  },
+  {
+    label: '实际取得账号',
+    value: account(props.record.actualAccountName, props.record.actualAccountId, '尚未确认'),
+  },
   {
     label: '调度阶段',
     value: stageText(props.record.stage),

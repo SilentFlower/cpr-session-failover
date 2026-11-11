@@ -19,6 +19,10 @@ export interface HistoryRecord {
   actualAccountId: string | null
   fromAccountId: string | null
   originalAccountId?: string
+  fromAccountName: string | null
+  originalAccountName: string | null
+  proposedAccountName: string | null
+  actualAccountName: string | null
   admittedAtMs: number | null
   completedAtMs: number | null
   outcome: string | null
@@ -62,6 +66,10 @@ function isRecord(value: unknown): value is HistoryRecord {
     'proposedAccountId',
     'actualAccountId',
     'fromAccountId',
+    'fromAccountName',
+    'originalAccountName',
+    'proposedAccountName',
+    'actualAccountName',
     'outcome',
     'errorCode',
     'requestErrorCode',

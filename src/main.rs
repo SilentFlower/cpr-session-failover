@@ -1,7 +1,7 @@
 //! 插件 RPC 入口，组合严格绑定、延迟选号与持久切换记录
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     error::Error,
     future::Future,
     sync::{Arc, Mutex, MutexGuard},
@@ -19,6 +19,7 @@ use form_urlencoded::parse as parse_query;
 use gateway_plugin_sdk::{
     CallBudgets, Capability, ErrorCode, Manifest, PluginFault, SendState, Stage,
     call::{
+        data::AccountFactsQuery,
         host::{LogLevel, LogRequest, LogResult},
         management::{
             CommandDescriptor, CommandInvocation, CommandParameter, CommandParameterType,
@@ -55,6 +56,10 @@ struct App {
 struct HistoryEntry {
     #[serde(flatten)]
     record: Record,
+    from_account_name: Option<String>,
+    original_account_name: Option<String>,
+    proposed_account_name: Option<String>,
+    actual_account_name: Option<String>,
     decision_time_utc: Option<String>,
     admitted_time_utc: Option<String>,
     completed_time_utc: Option<String>,
@@ -434,10 +439,16 @@ impl App {
         let as_of = query.as_of;
         let limit = query.limit;
         let history = self.audit.query(host, query).await?;
+        let names = account_names(host, &history.records).await;
+        let name = |id: &Option<String>| id.as_ref().and_then(|id| names.get(id)).cloned();
         let records: Vec<HistoryEntry> = history
             .records
             .into_iter()
             .map(|record| HistoryEntry {
+                from_account_name: name(&record.from_account_id),
+                original_account_name: name(&record.original_account_id),
+                proposed_account_name: name(&record.proposed_account_id),
+                actual_account_name: name(&record.actual_account_id),
                 decision_time_utc: format_utc(Some(record.decision_at_ms)),
                 admitted_time_utc: format_utc(record.admitted_at_ms),
                 completed_time_utc: format_utc(record.completed_at_ms),
@@ -491,6 +502,59 @@ impl Drop for IntentGuard {
                 .abandon(&self.request_id, &self.record_id);
         }
     }
+}
+
+async fn account_names(host: &HostClient, records: &[Record]) -> BTreeMap<String, String> {
+    let mut needed: BTreeSet<&str> = records
+        .iter()
+        .flat_map(|record| {
+            [
+                record.from_account_id.as_deref(),
+                record.original_account_id.as_deref(),
+                record.proposed_account_id.as_deref(),
+                record.actual_account_id.as_deref(),
+            ]
+        })
+        .flatten()
+        .collect();
+    let mut names = BTreeMap::new();
+    // 名称仅用于当前页面展示，读取失败或账号被删除时保留历史和稳定 ID
+    // 每页账号去重后读取，不为每条记录逐个发起管理请求
+    let lookup = async {
+        let mut cursor = None;
+        while !needed.is_empty() {
+            let Ok(page) = host
+                .account_facts(AccountFactsQuery {
+                    provider_id: None,
+                    cursor: cursor.clone(),
+                    limit: 200,
+                })
+                .await
+            else {
+                break;
+            };
+            for account in page.accounts {
+                if needed.remove(account.account_id.as_str()) {
+                    let name = if account.name.trim().is_empty() {
+                        account.email.unwrap_or_default()
+                    } else {
+                        account.name
+                    };
+                    if !name.trim().is_empty() {
+                        names.insert(account.account_id, name);
+                    }
+                }
+            }
+            match page.next_cursor {
+                Some(next) if cursor.as_ref().is_none_or(|previous| next > *previous) => {
+                    cursor = Some(next)
+                }
+                _ => break,
+            }
+        }
+    };
+    let _ = tokio::time::timeout(Duration::from_secs(2), lookup).await;
+    names
 }
 
 fn wall_ms() -> u64 {
