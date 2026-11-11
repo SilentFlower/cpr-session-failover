@@ -11,6 +11,7 @@ const stages: Record<string, string> = {
 
 const reasons: Record<string, string> = {
   wait_threshold: '选号等待达到阈值',
+  native_queue_replay: '原生续写排队超时后重发',
   native_continuation: '原生续写绑定原账号',
   item_reference: '输入引用原账号上下文',
   prewarm: '预热请求',

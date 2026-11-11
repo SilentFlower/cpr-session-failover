@@ -37,7 +37,8 @@ fn register(policy: &mut Policy, id: &str, session: &str, blocked: Option<&str>)
         "key_test",
         Identity {
             session_hash: session.into(),
-            blocked_reason: blocked.map(str::to_owned)
+            blocked_reason: blocked.map(str::to_owned),
+            replay_turn: None,
         },
         0
     ));

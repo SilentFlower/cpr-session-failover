@@ -11,6 +11,7 @@ use crate::{audit::Record, identity::Identity};
 
 const MAX_REQUESTS: usize = 2048;
 const MAX_SESSIONS: usize = 4096;
+const REPLAY_TTL_MS: u64 = 30_000;
 
 /// 插件配置；排队总预算继续由宿主控制
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -50,6 +51,22 @@ struct Pending {
     first_scheduled: Option<u64>,
     scheduled_attempt: Option<u32>,
     blocked_logged: bool,
+    native_queue_account: Option<String>,
+    ever_admitted: bool,
+    replay_from: Option<String>,
+}
+
+/// 等待交付的错误帧，只保留恢复需要的账号与脱敏轮次
+struct ReplayFrame {
+    turn: [u8; 32],
+    original_account: String,
+    expires_at: u64,
+}
+
+/// 空账号表示机会已消费，在过期前保留轮次以阻止重复重发提示
+struct Replay {
+    original_account: Option<String>,
+    expires_at: u64,
 }
 
 /// 会话内的短期迁移协调，不包含真实绑定账号
@@ -84,6 +101,8 @@ pub enum Action {
 pub struct Policy {
     pending: HashMap<String, Pending>,
     sessions: HashMap<String, Session>,
+    replay_frames: HashMap<String, ReplayFrame>,
+    replays: HashMap<[u8; 32], Replay>,
 }
 
 impl Policy {
@@ -127,6 +146,17 @@ impl Policy {
             .entry(identity.session_hash.clone())
             .or_default()
             .touched_at = now;
+        let replay_from = identity
+            .replay_turn
+            .filter(|_| {
+                matches!(
+                    identity.blocked_reason.as_deref(),
+                    None | Some("queue_budget_too_short")
+                )
+            })
+            .and_then(|turn| self.replays.get_mut(&turn))
+            .filter(|replay| replay.expires_at > now)
+            .and_then(|replay| replay.original_account.take());
         self.pending.insert(
             request_id.into(),
             Pending {
@@ -135,6 +165,75 @@ impl Policy {
                 first_scheduled: None,
                 scheduled_attempt: None,
                 blocked_logged: false,
+                native_queue_account: None,
+                ever_admitted: false,
+                replay_from,
+            },
+        );
+        true
+    }
+
+    /// 记录发送前的原账号超时，等待下游错误帧核对真实错误码
+    /// @param request_id 已确认初始响应为 429 的模型请求
+    /// @param now 单调时钟毫秒值
+    pub fn note_initial_429(&mut self, request_id: &str, now: u64) {
+        let Some(pending) = self
+            .pending
+            .get(request_id)
+            .filter(|pending| !pending.ever_admitted)
+        else {
+            return;
+        };
+        let Some((turn, account_id)) = pending
+            .identity
+            .replay_turn
+            .zip(pending.native_queue_account.as_ref())
+        else {
+            return;
+        };
+        self.replays.retain(|_, replay| replay.expires_at > now);
+        self.replay_frames.retain(|_, frame| frame.expires_at > now);
+        if self.replays.len() + self.replay_frames.len() < MAX_REQUESTS
+            && !self.replays.contains_key(&turn)
+            && !self.replay_frames.values().any(|frame| frame.turn == turn)
+        {
+            self.replay_frames.insert(
+                request_id.into(),
+                ReplayFrame {
+                    turn,
+                    original_account: account_id.clone(),
+                    expires_at: now.saturating_add(REPLAY_TTL_MS),
+                },
+            );
+        }
+    }
+
+    /// 查询是否需要检查下游错误帧，正常转发时保留惰性正文
+    /// @param now 单调时钟毫秒值
+    /// @return 是否存在仍有效的原账号排队失败
+    pub fn awaiting_replay_frame(&self, now: u64) -> bool {
+        self.replay_frames
+            .values()
+            .any(|frame| frame.expires_at > now)
+    }
+
+    /// 确认错误帧和原请求关联，开启同一轮的一次换号机会
+    /// @param request_id 错误帧的网关请求 ID
+    /// @param now 单调时钟毫秒值
+    /// @return 是否允许向客户端发出完整重发提示
+    pub fn offer_replay(&mut self, request_id: &str, now: u64) -> bool {
+        let Some(frame) = self
+            .replay_frames
+            .remove(request_id)
+            .filter(|frame| frame.expires_at > now)
+        else {
+            return false;
+        };
+        self.replays.insert(
+            frame.turn,
+            Replay {
+                original_account: Some(frame.original_account),
+                expires_at: frame.expires_at,
             },
         );
         true
@@ -159,6 +258,22 @@ impl Policy {
         let Some(pending) = self.pending.get_mut(&input.request_id) else {
             return Action::Delegate;
         };
+        if pending.identity.replay_turn.is_some()
+            && pending.identity.blocked_reason.as_deref() == Some("native_continuation")
+        {
+            // 原生续写只应看到原账号；记录最近一次仍因并发不可用的单候选
+            pending.native_queue_account = match (input.attempt_index, input.candidates.as_slice())
+            {
+                (1, [candidate])
+                    if !candidate.available
+                        && candidate.maximum_concurrency > 0
+                        && candidate.in_flight >= candidate.maximum_concurrency =>
+                {
+                    Some(candidate.account_id.clone())
+                }
+                _ => None,
+            };
+        }
         if pending.scheduled_attempt != Some(input.attempt_index) {
             pending.first_scheduled = Some(now);
             pending.scheduled_attempt = Some(input.attempt_index);
@@ -193,10 +308,14 @@ impl Policy {
             pending.identity.blocked_reason.as_deref(),
             Some("account_queue_disabled" | "queue_budget_too_short")
         );
-        if waited < u64::from(config.wait_seconds) * 1000 && !invalid_queue {
+        let replay_from = pending.replay_from.take();
+        if replay_from.is_none() && waited < u64::from(config.wait_seconds) * 1000 && !invalid_queue
+        {
             return Action::Delegate;
         }
-        if let Some(reason) = &pending.identity.blocked_reason {
+        if replay_from.is_none()
+            && let Some(reason) = &pending.identity.blocked_reason
+        {
             if pending.blocked_logged {
                 return Action::Delegate;
             }
@@ -213,12 +332,12 @@ impl Policy {
         let candidate = input
             .candidates
             .iter()
-            .filter(|c| c.available)
+            .filter(|c| c.available && replay_from.as_ref() != Some(&c.account_id))
             .min_by(|a, b| compare(a, b, &pending.identity.session_hash));
         let Some(candidate) = candidate else {
             return Action::Delegate;
         };
-        let record = Record::proposed(
+        let mut record = Record::proposed(
             input,
             &pending.identity.session_hash,
             &pending.key_id,
@@ -226,6 +345,9 @@ impl Policy {
             wall_ms,
             &candidate.account_id,
         );
+        if replay_from.is_some() {
+            record.reason = "native_queue_replay".into();
+        }
         session.reserved = Some(Reservation {
             request_id: input.request_id.clone(),
             attempt_index: input.attempt_index,
@@ -267,6 +389,7 @@ impl Policy {
         now: u64,
     ) -> Option<(String, bool)> {
         let pending = self.pending.get_mut(request_id)?;
+        pending.ever_admitted = true;
         // 每次实际取得账号都终止当前计时；上游错误后的新尝试必须重新开始选号等待
         pending.first_scheduled = None;
         pending.scheduled_attempt = None;

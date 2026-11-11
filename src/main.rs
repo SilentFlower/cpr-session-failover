@@ -17,7 +17,7 @@ use cpr_session_failover::{
 };
 use form_urlencoded::parse as parse_query;
 use gateway_plugin_sdk::{
-    CallBudgets, Capability, ErrorCode, Manifest, PluginFault, Stage,
+    CallBudgets, Capability, ErrorCode, Manifest, PluginFault, SendState, Stage,
     call::{
         host::{LogLevel, LogRequest, LogResult},
         management::{
@@ -26,13 +26,14 @@ use gateway_plugin_sdk::{
             ManagementRegistration, ManagementRequest, ManagementResource, ManagementResponse,
             ManagementRoute,
         },
-        middleware::{MiddlewareHeader, MiddlewareMount},
+        middleware::{MiddlewareHeader, MiddlewareMount, MiddlewareTransport},
         policy::{AccountScheduleDecision, AccountScheduleRequest},
         services::usage::{GetRecord, GetUsageRecord, UsageOutcome},
     },
     client::{
-        Empty, HostClient, MiddlewareResponse, PluginBuilder, PluginSession, RequestCall,
-        SessionConfig, TypedCall, TypedReply, methods,
+        Empty, HostClient, MiddlewareCall, MiddlewareResponse, PluginBuilder, PluginSession,
+        RequestCall, SessionConfig, TypedCall, TypedReply, WebSocketCall, WebSocketDirection,
+        WebSocketKind, WebSocketMessage, WebSocketPayload, methods,
     },
 };
 use serde::Serialize;
@@ -71,6 +72,10 @@ impl App {
     async fn request(&self, mut call: RequestCall) -> Result<MiddlewareResponse, PluginFault> {
         let request_id = call.request.head.request_id.clone();
         let attempt_index = call.request.head.attempt_index;
+        let websocket_response = call.request.head.mount == MiddlewareMount::Request
+            && call.request.head.transport == MiddlewareTransport::WebSocket
+            && call.request.head.endpoint == "/v1/responses"
+            && call.request.head.operation == "generate";
         let mut guard = None;
         if call.request.head.mount == MiddlewareMount::Request
             && call.request.head.protocol == "openai"
@@ -84,6 +89,9 @@ impl App {
                 &call.request.body,
             )
         {
+            if !websocket_response {
+                identity.replay_turn = None;
+            }
             let runtime = call
                 .request
                 .head
@@ -95,18 +103,21 @@ impl App {
                 .ok_or_else(|| fault("宿主缺少账号亲和设置"))?;
             // 只改本次模型调用，已有原生续写也按严格绑定复核，不能把会话拉回旧账号
             *mode = json!("strict");
-            if runtime
-                .get("max_waiting_per_account")
-                .and_then(Value::as_u64)
-                == Some(0)
-            {
-                identity.blocked_reason = Some("account_queue_disabled".into());
-            } else if runtime
-                .get("concurrency_wait_timeout_seconds")
-                .and_then(Value::as_u64)
-                .is_none_or(|seconds| seconds <= u64::from(self.config.wait_seconds))
-            {
-                identity.blocked_reason = Some("queue_budget_too_short".into());
+            if identity.blocked_reason.is_none() {
+                if runtime
+                    .get("max_waiting_per_account")
+                    .and_then(Value::as_u64)
+                    == Some(0)
+                {
+                    identity.blocked_reason = Some("account_queue_disabled".into());
+                } else if runtime
+                    .get("account_queue_timeout_seconds")
+                    .or_else(|| runtime.get("concurrency_wait_timeout_seconds"))
+                    .and_then(Value::as_u64)
+                    .is_none_or(|seconds| seconds <= u64::from(self.config.wait_seconds))
+                {
+                    identity.blocked_reason = Some("queue_budget_too_short".into());
+                }
             }
             if self.policy().register(
                 &request_id,
@@ -152,6 +163,23 @@ impl App {
             }
         }
         let result = call.next.run(call.request).await;
+        if websocket_response
+            && match &result {
+                Ok(response) => response.status == 429,
+                Err(error) => {
+                    error.send_state == SendState::NotSent
+                        && error
+                            .details
+                            .as_ref()
+                            .and_then(|detail| detail.get("kind"))
+                            .and_then(Value::as_str)
+                            == Some("concurrency_queue_timeout")
+                }
+            }
+        {
+            // 初始 429 也可能由上游生成，最终由错误帧和原请求 ID 复核
+            self.policy().note_initial_429(&request_id, self.now());
+        }
         let response_metadata = result
             .as_ref()
             .ok()
@@ -193,6 +221,48 @@ impl App {
         }
         drop(guard);
         result
+    }
+
+    async fn websocket(
+        &self,
+        call: WebSocketCall,
+    ) -> Result<Option<WebSocketMessage>, PluginFault> {
+        let outgoing = call.direction == WebSocketDirection::Outgoing;
+        let Some(mut message) = call.next.run(call.message).await? else {
+            return Ok(None);
+        };
+        if !outgoing
+            || message.kind != WebSocketKind::Text
+            || !self.policy().awaiting_replay_frame(self.now())
+        {
+            return Ok(Some(message));
+        }
+        let bytes = message.payload.collect().await?;
+        let replacement = serde_json::from_slice::<Value>(&bytes)
+            .ok()
+            .and_then(|mut frame| {
+                if frame.get("type")?.as_str()? != "error"
+                    || frame.get("status")?.as_u64()? != 429
+                    || frame.pointer("/error/code")?.as_str()? != "concurrency_queue_timeout"
+                {
+                    return None;
+                }
+                let request_id = frame.pointer("/headers/x-request-id")?.as_str()?;
+                if !self.policy().offer_replay(request_id, self.now()) {
+                    return None;
+                }
+                // 在交付边界投影客户端恢复信号，宿主诊断仍保留真实排队失败
+                frame["status"] = json!(400);
+                frame["error"] = json!({
+                    "type":"invalid_request_error",
+                    "code":"previous_response_not_found",
+                    "message":"Replay the full request to continue on an available account.",
+                    "param":"previous_response_id"
+                });
+                serde_json::to_vec(&frame).ok()
+            });
+        message.payload = WebSocketPayload::from_bytes(replacement.unwrap_or(bytes));
+        Ok(Some(message))
     }
 
     async fn schedule(
@@ -698,9 +768,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let management_app = app.clone();
     let command_app = app.clone();
     let plugin = PluginBuilder::from_json(include_bytes!("../plugin.json"))?
-        .middleware(move |call: RequestCall| {
+        .middleware(move |call: MiddlewareCall| {
             let app = middleware_app.clone();
-            async move { app.request(call).await }
+            async move {
+                match call {
+                    MiddlewareCall::Request(call) => app.request(*call).await.map(Into::into),
+                    MiddlewareCall::WebSocket(call) => app.websocket(*call).await.map(Into::into),
+                    other => other.forward().await,
+                }
+            }
         })?
         .on(methods::SCHEDULE_ACCOUNT, move |call| {
             let app = schedule_app.clone();

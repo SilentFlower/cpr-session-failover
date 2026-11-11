@@ -11,6 +11,7 @@ use std::{
 
 use gateway_plugin_sdk::{
     CallContext, ErrorCode, Frame, Handshake, Manifest, Message, PluginFault, Stage,
+    call::middleware::MiddlewareTransport,
     client::{read_frame, write_frame},
 };
 use serde_json::{Value, json};
@@ -39,6 +40,7 @@ struct Host {
     chunks: VecDeque<Vec<u8>>,
     call_ids: HashMap<u64, u64>,
     next_call_id: u64,
+    host_queue_failover: bool,
 }
 
 impl Host {
@@ -70,6 +72,7 @@ impl Host {
             chunks: VecDeque::new(),
             call_ids: HashMap::new(),
             next_call_id: 1,
+            host_queue_failover: true,
         };
         let manifest = Manifest::from_author_slice(include_bytes!("../plugin.json")).unwrap();
         host.send(
@@ -334,12 +337,24 @@ impl Host {
     }
 
     async fn model_input(&mut self, id: u64, request: &str, attempt: bool, body: Vec<u8>) {
+        self.model_input_with_transport(id, request, attempt, MiddlewareTransport::HttpSse, body)
+            .await;
+    }
+
+    async fn model_input_with_transport(
+        &mut self,
+        id: u64,
+        request: &str,
+        attempt: bool,
+        transport: MiddlewareTransport,
+        body: Vec<u8>,
+    ) {
         let settings = if attempt {
             Value::Null
         } else {
-            json!({"runtime":{"openai_account_affinity":"preferred","max_waiting_per_account":10,"concurrency_wait_timeout_seconds":120},"fast_mode":"default","client_limits":{},"timeout_ms":null})
+            json!({"runtime":{"openai_account_affinity":"preferred","max_waiting_per_account":10,"account_queue_timeout_seconds":20,"switch_account_on_queue_failure":self.host_queue_failover},"fast_mode":"default","client_limits":{},"timeout_ms":null})
         };
-        let params = json!({"settings_sources":{},"settings":settings,"request_id":request,"client_key_id":"key_test","account_group_ids":[],"mount":if attempt {"attempt"} else {"request"},"attempt_index":if attempt {Some(1)} else {None},"operation":"generate","protocol":"openai","endpoint":"/v1/responses","transport":"http_sse","provider":if attempt {Some("openai")} else {None},"model":"test-model","account_id":if attempt {Some("B")} else {None},"headers":[]});
+        let params = json!({"settings_sources":{},"settings":settings,"request_id":request,"client_key_id":"key_test","account_group_ids":[],"mount":if attempt {"attempt"} else {"request"},"attempt_index":if attempt {Some(1)} else {None},"operation":"generate","protocol":"openai","endpoint":"/v1/responses","transport":transport,"provider":if attempt {Some("openai")} else {None},"model":"test-model","account_id":if attempt {Some("B")} else {None},"headers":[]});
         self.call(
             id,
             if attempt {
@@ -360,6 +375,10 @@ impl Host {
                 params["settings"]["runtime"]["openai_account_affinity"],
                 "strict"
             );
+            assert_eq!(
+                params["settings"]["runtime"]["switch_account_on_queue_failure"],
+                self.host_queue_failover
+            );
             assert_eq!(params["body"], "preserve");
             assert_eq!(params["header_mutations"], json!([]));
         }
@@ -371,10 +390,36 @@ impl Host {
     }
 
     async fn send_schedule(&mut self, id: u64, request: &str) {
-        self.call(id, Stage::Scheduling, "policy.schedule_account", Some(request), json!({"request_id":request,"attempt_index":1,"provider":"openai","model":"test-model","candidates":[
+        self.send_candidates(id, request, json!([
             {"account_id":"A","available":false,"weight":1,"in_flight":3,"maximum_concurrency":3},
             {"account_id":"B","available":true,"weight":1,"in_flight":0,"maximum_concurrency":3}
-        ]}), vec![]).await;
+        ])).await;
+    }
+
+    async fn send_candidates(&mut self, id: u64, request: &str, candidates: Value) {
+        self.call(id, Stage::Scheduling, "policy.schedule_account", Some(request), json!({"request_id":request,"attempt_index":1,"provider":"openai","model":"test-model","candidates":candidates}), vec![]).await;
+    }
+
+    async fn websocket_output(&mut self, id: u64, frame: &Value) -> Value {
+        let message = json!({"kind":{"kind":"text"},"payload":{"kind":"bytes"}});
+        let bytes = serde_json::to_vec(frame).unwrap();
+        self.call(
+            id,
+            Stage::WebSocket,
+            "middleware.handle",
+            None,
+            json!({
+                "connection_id":"ws_test", "direction":"outgoing", "headers":[], "message":message
+            }),
+            bytes.clone(),
+        )
+        .await;
+        self.wait_next(id).await;
+        let (next, forwarded) = self.next.remove(&id).unwrap();
+        assert_eq!(forwarded, message);
+        self.respond(next, forwarded, bytes).await;
+        let (_, payload) = self.result(id).await;
+        serde_json::from_slice(&payload).unwrap()
     }
 
     async fn finish_next(&mut self, parent: u64) {
@@ -718,6 +763,115 @@ async fn settings_reject_incomplete_or_foreign_input_before_native_dispatch() {
             serde_json::from_slice::<Value>(&payload).unwrap()["error"]["code"],
             "invalid_settings"
         );
+    }
+    host.stop().await;
+}
+
+#[tokio::test]
+async fn native_queue_timeout_prompts_one_full_replay_and_selects_the_backup() {
+    let mut host = Host::start(HashMap::new(), 0).await;
+    let body = |turn: &str, previous: bool| {
+        let mut value = json!({
+            "model":"test-model",
+            "client_metadata":{"session_id":"root","thread_id":"root","turn_id":turn},
+            "input":[{"type":"message","role":"user","content":"test"}]
+        });
+        if previous {
+            value["previous_response_id"] = json!("resp_A");
+        }
+        serde_json::to_vec(&value).unwrap()
+    };
+    let account_a = json!({"account_id":"A","available":false,"weight":1,"in_flight":3,"maximum_concurrency":3});
+    for (offset, host_queue_failover, has_backup) in [
+        (0, true, true),
+        (30, true, false),
+        (60, false, true),
+        (90, false, false),
+    ] {
+        host.host_queue_failover = host_queue_failover;
+        let request = format!("req_native_{offset}");
+        let turn = format!("turn_{offset}");
+        host.model_input_with_transport(
+            10 + offset,
+            &request,
+            false,
+            MiddlewareTransport::WebSocket,
+            body(&turn, true),
+        )
+        .await;
+        host.send_candidates(11 + offset, &request, json!([account_a]))
+            .await;
+        assert_eq!(host.result(11 + offset).await.0["decision"], "delegate");
+
+        let (next, _) = host.next.remove(&(10 + offset)).unwrap();
+        host.respond(next, json!({"response":"initial_error","protocol":"openai","status":429,"headers":[],"body":{"handle":"error_frame","framing":"json_document"}}), vec![]).await;
+        let (result, _) = host.result(10 + offset).await;
+        assert_eq!(result["body"]["kind"], "pass_through");
+
+        let error = json!({
+            "type":"error", "status":429, "error":{"code":"concurrency_queue_timeout"},
+            "headers":{"x-request-id":request}
+        });
+        let mut unrelated = error.clone();
+        unrelated["headers"]["x-request-id"] = json!("different_request");
+        assert_eq!(
+            host.websocket_output(12 + offset, &unrelated).await,
+            unrelated
+        );
+        let recovery = host.websocket_output(13 + offset, &error).await;
+        assert_eq!(recovery["status"], 400);
+        assert_eq!(recovery["error"]["code"], "previous_response_not_found");
+        assert_eq!(recovery["headers"], error["headers"]);
+        assert_eq!(host.websocket_output(14 + offset, &error).await, error);
+
+        let replay = format!("req_replay_{offset}");
+        let other = format!("req_other_{offset}");
+        host.model_input_with_transport(
+            15 + offset,
+            &other,
+            false,
+            MiddlewareTransport::WebSocket,
+            body("different_turn", false),
+        )
+        .await;
+        assert_eq!(
+            host.schedule(16 + offset, &other).await["decision"],
+            "delegate"
+        );
+        host.cancel(15 + offset).await;
+        host.model_input_with_transport(
+            17 + offset,
+            &replay,
+            false,
+            MiddlewareTransport::WebSocket,
+            body(&turn, false),
+        )
+        .await;
+        if has_backup {
+            let decision = host.schedule(18 + offset, &replay).await;
+            assert_eq!(decision["account_id"], "B");
+            assert_eq!(host.record(&replay)["reason"], "native_queue_replay");
+        } else {
+            host.send_candidates(18 + offset, &replay, json!([account_a]))
+                .await;
+            assert_eq!(host.result(18 + offset).await.0["decision"], "delegate");
+        }
+        host.cancel(17 + offset).await;
+
+        let repeated = format!("req_repeated_{offset}");
+        host.model_input_with_transport(
+            19 + offset,
+            &repeated,
+            false,
+            MiddlewareTransport::WebSocket,
+            body(&turn, false),
+        )
+        .await;
+        assert_eq!(
+            host.schedule(20 + offset, &repeated).await["decision"],
+            "delegate"
+        );
+        host.cancel(19 + offset).await;
     }
     host.stop().await;
 }

@@ -3,7 +3,7 @@
   "publisher": "silentflower",
   "name": "session-failover",
   "displayName": "会话排队迁移",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "description": "严格会话绑定下限时等待、换号改绑与切换记录",
   "license": "Apache-2.0",
   "engines": { "codex-proxy-rs": ">=3.41.0" },
@@ -18,7 +18,7 @@
     "web/app.css": "text/css"
   },
   "contributes": {
-    "middleware": { "version": 6, "stages": ["request", "attempt"], "inputFormats": ["openai"], "outputFormats": ["openai"] },
+    "middleware": { "version": 6, "stages": ["request", "attempt", "websocket"], "inputFormats": ["openai"], "outputFormats": ["openai"] },
     "scheduler": { "version": 3 },
     "management": { "version": 2 },
     "command_line": {},

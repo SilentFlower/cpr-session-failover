@@ -10,12 +10,17 @@ use sha2::{Digest, Sha256};
 pub struct Identity {
     pub session_hash: String,
     pub blocked_reason: Option<String>,
+    pub replay_turn: Option<[u8; 32]>,
 }
 
 /// 只反序列化身份字段，忽略业务内容和其他 metadata
 #[derive(Default, Deserialize)]
 struct Metadata {
     session_id: Option<String>,
+    thread_id: Option<String>,
+    turn_id: Option<String>,
+    #[serde(rename = "x-openai-subagent", alias = "subagent_kind")]
+    subagent: Option<String>,
     #[serde(rename = "x-codex-turn-metadata", alias = "turn_metadata")]
     turn_metadata: Option<String>,
 }
@@ -23,6 +28,7 @@ struct Metadata {
 /// 原始 input 保持借用，不复制完整聊天消息
 #[derive(Deserialize)]
 struct Envelope<'a> {
+    model: Option<String>,
     session_id: Option<String>,
     client_metadata: Option<Metadata>,
     context: Option<Metadata>,
@@ -85,16 +91,17 @@ pub fn identify(key_id: &str, headers: &[MiddlewareHeader], body: &[u8]) -> Opti
     hash.update(key_id.as_bytes());
     hash.update(b"\0");
     hash.update(session.as_bytes());
-    let references = body
+    let items = body
         .input
         .filter(|v| v.get().trim_start().starts_with('['))
-        .and_then(|v| serde_json::from_str::<Vec<InputKind>>(v.get()).ok())
-        .is_some_and(|items| {
-            items
-                .iter()
-                .any(|i| i.kind.as_deref() == Some("item_reference"))
-        });
-    let blocked_reason = if text(body.previous_response_id.as_deref()).is_some() {
+        .and_then(|v| serde_json::from_str::<Vec<InputKind>>(v.get()).ok());
+    let references = items.as_ref().is_some_and(|items| {
+        items
+            .iter()
+            .any(|i| i.kind.as_deref() == Some("item_reference"))
+    });
+    let native = text(body.previous_response_id.as_deref()).is_some();
+    let blocked_reason = if native {
         Some("native_continuation".into())
     } else if references {
         Some("item_reference".into())
@@ -103,8 +110,77 @@ pub fn identify(key_id: &str, headers: &[MiddlewareHeader], body: &[u8]) -> Opti
     } else {
         None
     };
+    let session_hash = format!("{:x}", hash.finalize());
+    // 只接受同一轮可识别的根线程；引用输入和预热不参与恢复
+    let replay_turn = (!references
+        && body.generate != Some(false)
+        && (native
+            || (body.previous_response_id.is_none()
+                && items.is_some_and(|items| !items.is_empty()))))
+    .then(|| replay_turn(headers, &body, &session, &session_hash))
+    .flatten();
     Some(Identity {
-        session_hash: format!("{:x}", hash.finalize()),
+        session_hash,
         blocked_reason,
+        replay_turn,
     })
+}
+
+fn replay_turn(
+    headers: &[MiddlewareHeader],
+    body: &Envelope<'_>,
+    session: &str,
+    session_hash: &str,
+) -> Option<[u8; 32]> {
+    let client = body.client_metadata.as_ref();
+    let metadata = [
+        header(headers, "x-codex-turn-metadata"),
+        body.turn_metadata.as_deref(),
+        client.and_then(|m| m.turn_metadata.as_deref()),
+        body.context
+            .as_ref()
+            .and_then(|m| m.turn_metadata.as_deref()),
+    ]
+    .map(|value| value.and_then(|value| serde_json::from_str::<Metadata>(value).ok()));
+    if header(headers, "x-openai-subagent").is_some()
+        || client
+            .into_iter()
+            .chain(metadata.iter().flatten())
+            .any(|m| text(m.subagent.as_deref()).is_some())
+    {
+        return None;
+    }
+    let thread = metadata[0]
+        .as_ref()
+        .and_then(|m| text(m.thread_id.as_deref()))
+        .or_else(|| header(headers, "thread-id"))
+        .or_else(|| client.and_then(|m| text(m.thread_id.as_deref())))
+        .or_else(|| {
+            metadata[1..]
+                .iter()
+                .flatten()
+                .find_map(|m| text(m.thread_id.as_deref()))
+        })?;
+    if thread != session {
+        return None;
+    }
+    let turn = metadata[0]
+        .as_ref()
+        .and_then(|m| text(m.turn_id.as_deref()))
+        .or_else(|| header(headers, "x-client-turn-id"))
+        .or_else(|| client.and_then(|m| text(m.turn_id.as_deref())))
+        .or_else(|| {
+            metadata[1..]
+                .iter()
+                .flatten()
+                .find_map(|m| text(m.turn_id.as_deref()))
+        })?;
+    let model = text(body.model.as_deref())?;
+    let mut hash = Sha256::new();
+    hash.update(b"cpr-session-failover-replay-v1\0");
+    for part in [session_hash, thread, turn, model] {
+        hash.update((part.len() as u64).to_be_bytes());
+        hash.update(part);
+    }
+    Some(hash.finalize().into())
 }

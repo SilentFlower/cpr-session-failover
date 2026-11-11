@@ -75,3 +75,33 @@ fn native_reference_and_prewarm_are_conservatively_protected() {
         );
     }
 }
+
+#[test]
+fn full_replay_requires_the_same_root_thread_turn_and_model() {
+    let envelope = |thread: &str, turn: &str, model: &str, native: bool| {
+        let mut value = serde_json::json!({
+            "model":model,
+            "client_metadata":{"session_id":"root","thread_id":thread,"turn_id":turn},
+            "input":[{"type":"message","role":"user","content":"test"}]
+        });
+        if native {
+            value["previous_response_id"] = serde_json::json!("resp_A");
+        }
+        serde_json::to_vec(&value).unwrap()
+    };
+    let turn = |key, thread, turn, model, native| {
+        identify(key, &[], &envelope(thread, turn, model, native))
+            .unwrap()
+            .replay_turn
+    };
+    let original = turn("key", "root", "turn", "model", true);
+    assert!(original.is_some());
+    assert_eq!(original, turn("key", "root", "turn", "model", false));
+    assert_ne!(
+        original,
+        turn("another_key", "root", "turn", "model", false)
+    );
+    assert_ne!(original, turn("key", "root", "other_turn", "model", false));
+    assert_ne!(original, turn("key", "root", "turn", "other_model", false));
+    assert!(turn("key", "child", "turn", "model", false).is_none());
+}
