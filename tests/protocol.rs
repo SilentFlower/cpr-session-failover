@@ -206,7 +206,7 @@ impl Host {
                         "schema_version":1,
                         "accounts":(["A","B"].into_iter().map(|account| json!({
                             "account_id":account,"provider_id":"openai","name":format!("账号 {account}"),
-                            "email":null,"enabled":true,"group_ids":[],"updated_at_ms":0
+                            "email":format!("{account}@example.test"),"enabled":true,"group_ids":[],"updated_at_ms":0
                         })).collect::<Vec<_>>()),
                         "next_cursor":null
                     })).unwrap();
@@ -595,6 +595,16 @@ async fn migration_records_actual_admission_and_survives_restart() {
     assert_eq!(history["records"][0]["fromAccountName"], "账号 A");
     assert_eq!(history["records"][0]["actualAccountName"], "账号 B");
     assert_eq!(history["records"][0]["proposedAccountName"], "账号 B");
+    assert_eq!(history["records"][0]["fromAccountEmail"], "A@example.test");
+    assert_eq!(
+        history["records"][0]["actualAccountEmail"],
+        "B@example.test"
+    );
+    assert_eq!(
+        history["records"][0]["proposedAccountEmail"],
+        "B@example.test"
+    );
+    assert!(history["records"][0]["originalAccountEmail"].is_null());
     restarted.call(61, Stage::Management, "management.handle", None, json!({"method":"GET","path":"history","query":"limit=10&requestId=req_one","content_type":null,"headers":[]}), vec![]).await;
     let (response, payload) = restarted.result(61).await;
     assert_eq!(response["status"], 200);

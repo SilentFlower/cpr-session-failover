@@ -77,7 +77,7 @@ CPR 未公开真实入队起点和绑定版本，纯插件使用首次选号后�
 
 [记录页](https://github.com/SilentFlower/cpr-session-failover/releases/download/v0.3.2/records-light.png) · [设置弹窗](https://github.com/SilentFlower/cpr-session-failover/releases/download/v0.3.2/settings-dialog.png) · [高级设置](https://github.com/SilentFlower/cpr-session-failover/releases/download/v0.3.2/settings-advanced.png) · [记录详情](https://github.com/SilentFlower/cpr-session-failover/releases/download/v0.3.2/records-details.png)，截图使用隔离实例中的模拟记录
 
-列表优先显示账号名称，详情保留完整 ID；名称在刷新时读取宿主当前账号资料，名称为空时使用邮箱，账号被删除或查询失败时保留 ID
+列表同时显示账号名称和邮箱，详情保留完整 ID；资料在刷新时读取宿主当前账号信息，名称为空时使用邮箱，重复邮箱仅显示一次，账号被删除或查询失败时保留 ID
 
 页面时间由插件后端按北京时间（UTC+8）显示。仅在提出迁移或触发迁移保护时记录，直接取得账号的普通请求不会出现在列表中。匹配总数覆盖所有保留历史，已确认改绑数量仅统计当前页，均不能代表真实累计切换次数
 

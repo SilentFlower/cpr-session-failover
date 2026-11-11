@@ -57,9 +57,13 @@ struct HistoryEntry {
     #[serde(flatten)]
     record: Record,
     from_account_name: Option<String>,
+    from_account_email: Option<String>,
     original_account_name: Option<String>,
+    original_account_email: Option<String>,
     proposed_account_name: Option<String>,
+    proposed_account_email: Option<String>,
     actual_account_name: Option<String>,
+    actual_account_email: Option<String>,
     decision_time_utc: Option<String>,
     admitted_time_utc: Option<String>,
     completed_time_utc: Option<String>,
@@ -439,16 +443,29 @@ impl App {
         let as_of = query.as_of;
         let limit = query.limit;
         let history = self.audit.query(host, query).await?;
-        let names = account_names(host, &history.records).await;
-        let name = |id: &Option<String>| id.as_ref().and_then(|id| names.get(id)).cloned();
+        let profiles = account_profiles(host, &history.records).await;
+        let name = |id: &Option<String>| {
+            id.as_ref()
+                .and_then(|id| profiles.get(id))
+                .map(|(name, _)| name.clone())
+        };
+        let email = |id: &Option<String>| {
+            id.as_ref()
+                .and_then(|id| profiles.get(id))
+                .and_then(|(_, email)| email.clone())
+        };
         let records: Vec<HistoryEntry> = history
             .records
             .into_iter()
             .map(|record| HistoryEntry {
                 from_account_name: name(&record.from_account_id),
+                from_account_email: email(&record.from_account_id),
                 original_account_name: name(&record.original_account_id),
+                original_account_email: email(&record.original_account_id),
                 proposed_account_name: name(&record.proposed_account_id),
+                proposed_account_email: email(&record.proposed_account_id),
                 actual_account_name: name(&record.actual_account_id),
+                actual_account_email: email(&record.actual_account_id),
                 decision_time_utc: format_utc(Some(record.decision_at_ms)),
                 admitted_time_utc: format_utc(record.admitted_at_ms),
                 completed_time_utc: format_utc(record.completed_at_ms),
@@ -504,7 +521,10 @@ impl Drop for IntentGuard {
     }
 }
 
-async fn account_names(host: &HostClient, records: &[Record]) -> BTreeMap<String, String> {
+async fn account_profiles(
+    host: &HostClient,
+    records: &[Record],
+) -> BTreeMap<String, (String, Option<String>)> {
     let mut needed: BTreeSet<&str> = records
         .iter()
         .flat_map(|record| {
@@ -535,13 +555,14 @@ async fn account_names(host: &HostClient, records: &[Record]) -> BTreeMap<String
             };
             for account in page.accounts {
                 if needed.remove(account.account_id.as_str()) {
+                    let email = account.email.filter(|email| !email.trim().is_empty());
                     let name = if account.name.trim().is_empty() {
-                        account.email.unwrap_or_default()
+                        email.clone().unwrap_or_default()
                     } else {
                         account.name
                     };
                     if !name.trim().is_empty() {
-                        names.insert(account.account_id, name);
+                        names.insert(account.account_id, (name, email));
                     }
                 }
             }

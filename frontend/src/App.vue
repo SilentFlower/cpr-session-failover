@@ -270,14 +270,20 @@ onBeforeUnmount(() => {
               <dt class="text-z-text-secondary">
                 {{ row.fromAccountId || !row.originalAccountId ? '前绑定' : '续写原账号' }}
               </dt>
-              <dd class="m-0 truncate font-emphasis" :title="row.fromAccountId ?? row.originalAccountId">
-                {{ row.fromAccountId ? (row.fromAccountName ?? row.fromAccountId) : (row.originalAccountName ?? row.originalAccountId ?? '缺少证据') }}
+              <dd class="m-0 min-w-0 space-y-1" :title="row.fromAccountId ?? row.originalAccountId">
+                <span class="block truncate font-emphasis">{{ row.fromAccountId ? (row.fromAccountName ?? row.fromAccountId) : (row.originalAccountName ?? row.originalAccountId ?? '缺少证据') }}</span>
+                <span v-if="row.fromAccountId ? (row.fromAccountEmail && row.fromAccountEmail !== row.fromAccountName) : (row.originalAccountEmail && row.originalAccountEmail !== row.originalAccountName)" class="block truncate text-z-text-secondary" :title="(row.fromAccountId ? row.fromAccountEmail : row.originalAccountEmail) ?? undefined">
+                  {{ row.fromAccountId ? row.fromAccountEmail : row.originalAccountEmail }}
+                </span>
               </dd>
               <dt class="text-z-text-secondary">
                 实际取得
               </dt>
-              <dd class="m-0 truncate font-emphasis" :title="row.actualAccountId ?? undefined">
-                {{ row.actualAccountName ?? row.actualAccountId ?? '尚未确认' }}
+              <dd class="m-0 min-w-0 space-y-1" :title="row.actualAccountId ?? undefined">
+                <span class="block truncate font-emphasis">{{ row.actualAccountName ?? row.actualAccountId ?? '尚未确认' }}</span>
+                <span v-if="row.actualAccountEmail && row.actualAccountEmail !== row.actualAccountName" class="block truncate text-z-text-secondary" :title="row.actualAccountEmail">
+                  {{ row.actualAccountEmail }}
+                </span>
               </dd>
             </dl>
           </template>
