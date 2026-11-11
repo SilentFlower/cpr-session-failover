@@ -158,9 +158,18 @@ pub fn evidence(document: &Value, record: &Record) -> Result<Evidence, PluginFau
                     .and_then(Value::as_str)
                     == Some("strict")
         });
-    let from = selected
-        .filter(|_| ordinary_strict)
-        .and_then(|e| e.pointer("/data/preferredAccountId"))
+    let migration = relevant.iter().rev().find(|event| {
+        event.get("stage").and_then(Value::as_str) == Some("account.binding.migrated")
+            && actual.is_some()
+            && event.pointer("/data/toAccountId").and_then(Value::as_str) == actual
+    });
+    let from = migration
+        .and_then(|event| event.pointer("/data/fromAccountId"))
+        .or_else(|| {
+            selected
+                .filter(|_| ordinary_strict)
+                .and_then(|e| e.pointer("/data/preferredAccountId"))
+        })
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty() && s.len() <= 128)
         .map(str::to_owned);

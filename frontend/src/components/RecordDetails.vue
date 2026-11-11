@@ -12,6 +12,11 @@ const fields = computed(() => [
     value: String(props.record.attemptIndex),
   },
   { label: '前绑定账号', value: props.record.fromAccountId ?? '未知' },
+  ...(props.record.originalAccountId
+    ? [
+        { label: '续写原账号', value: props.record.originalAccountId },
+      ]
+    : []),
   { label: '计划账号', value: props.record.proposedAccountId ?? '无' },
   { label: '实际取得账号', value: props.record.actualAccountId ?? '尚未确认' },
   {
@@ -25,9 +30,9 @@ const fields = computed(() => [
   { label: '模型', value: props.record.model ?? '未知' },
   { label: 'Key ID', value: props.record.clientKeyId },
   { label: '会话摘要', value: props.record.sessionHash },
-  { label: '触发时间（UTC）', value: props.record.decisionTimeUtc ?? '未知' },
-  { label: '取得账号时间（UTC）', value: props.record.admittedTimeUtc ?? '尚未确认' },
-  { label: '请求结束时间（UTC）', value: props.record.completedTimeUtc ?? '尚未确认' },
+  { label: '触发时间（北京时间）', value: props.record.decisionTimeDisplay ?? '未知' },
+  { label: '取得账号时间（北京时间）', value: props.record.admittedTimeDisplay ?? '尚未确认' },
+  { label: '请求结束时间（北京时间）', value: props.record.completedTimeDisplay ?? '尚未确认' },
   {
     label: '插件选号等待',
     value: duration(props.record.schedulerWaitMs),
@@ -52,7 +57,7 @@ const fields = computed(() => [
 </script>
 
 <template>
-  <section :id="`record-${record.id}`" aria-label="切换详情" class="space-y-4 p-4">
+  <section :id="`record-${record.id}`" aria-label="切换详情" class="space-y-4 rounded-z bg-z-fill-alter p-4">
     <p v-if="record.bindingChanged === null" class="text-z-sm text-z-text-secondary">
       {{ record.evidenceStatus === 'unavailable' ? '缺少改绑证据，不能据此判断是否切换成功' : '改绑证据由后台补齐，取得账号不等于已核实改绑' }}
     </p>

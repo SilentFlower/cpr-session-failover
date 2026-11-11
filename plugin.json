@@ -3,7 +3,7 @@
   "publisher": "silentflower",
   "name": "session-failover",
   "displayName": "会话排队迁移",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "严格会话绑定下限时等待、换号改绑与切换记录",
   "license": "Apache-2.0",
   "engines": { "codex-proxy-rs": ">=3.41.0" },

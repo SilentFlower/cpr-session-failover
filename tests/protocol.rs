@@ -268,7 +268,7 @@ impl Host {
                     assert_eq!(params["operation"], "usage.records.get");
                     assert_eq!(params["input"]["id"], "req_one");
                     self.respond(id, json!({"Ok":{"id":"req_one","data":{
-                            "client_key_ref":"key_test","provider":"openai","account_ref":"B","requested_model":"test-model","model":"test-model","protocol":"openai","operation":"generate","endpoint":"/v1/responses","client_transport":"http_sse","service_tier":null,"started_at_ms":1000,"completed_at_ms":20000,"outcome":"succeeded","tokens":{},"cost":{"kind":"unavailable"}
+                            "client_key_ref":"key_test","provider":"openai","account_ref":"B","requested_model":"test-model","model":"test-model","protocol":"openai","operation":"generate","endpoint":"/v1/responses","client_transport":"http_sse","service_tier":null,"started_at_ms":1000,"completed_at_ms":57600000,"outcome":"succeeded","tokens":{},"cost":{"kind":"unavailable"}
                         },"billing_snapshot":null,"provider_observation":null}}), vec![]).await;
                 }
                 "host.http.dispatch" => {
@@ -583,6 +583,14 @@ async fn migration_records_actual_admission_and_survives_restart() {
     assert_eq!(response["status"], 200);
     let history: Value = serde_json::from_slice(&payload).unwrap();
     assert_eq!(history["records"][0]["requestId"], "req_one");
+    assert_eq!(
+        history["records"][0]["completedTimeDisplay"],
+        "1970-01-02 00:00:00"
+    );
+    assert_eq!(
+        history["records"][0]["completedTimeUtc"],
+        "1970-01-01T16:00:00Z"
+    );
     assert!(
         history["records"][0]["decisionTimeUtc"]
             .as_str()
@@ -851,6 +859,7 @@ async fn native_queue_timeout_prompts_one_full_replay_and_selects_the_backup() {
             let decision = host.schedule(18 + offset, &replay).await;
             assert_eq!(decision["account_id"], "B");
             assert_eq!(host.record(&replay)["reason"], "native_queue_replay");
+            assert_eq!(host.record(&replay)["originalAccountId"], "A");
         } else {
             host.send_candidates(18 + offset, &replay, json!([account_a]))
                 .await;

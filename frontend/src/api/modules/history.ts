@@ -9,15 +9,16 @@ export interface HistoryRecord {
   clientKeyId: string
   model: string | null
   decisionAtMs: number
-  decisionTimeUtc: string | null
-  admittedTimeUtc: string | null
-  completedTimeUtc: string | null
+  decisionTimeDisplay: string | null
+  admittedTimeDisplay: string | null
+  completedTimeDisplay: string | null
   schedulerWaitMs: number
   stage: string
   reason: string
   proposedAccountId: string | null
   actualAccountId: string | null
   fromAccountId: string | null
+  originalAccountId?: string
   admittedAtMs: number | null
   completedAtMs: number | null
   outcome: string | null
@@ -54,9 +55,9 @@ function isRecord(value: unknown): value is HistoryRecord {
   ]
   const numbers = ['attemptIndex', 'decisionAtMs', 'schedulerWaitMs']
   const nullableText = [
-    'decisionTimeUtc',
-    'admittedTimeUtc',
-    'completedTimeUtc',
+    'decisionTimeDisplay',
+    'admittedTimeDisplay',
+    'completedTimeDisplay',
     'model',
     'proposedAccountId',
     'actualAccountId',
@@ -75,6 +76,7 @@ function isRecord(value: unknown): value is HistoryRecord {
     && numbers.every(key => typeof value[key] === 'number' && Number.isFinite(value[key]))
     && nullableText.every(key => value[key] === null || typeof value[key] === 'string')
     && nullableNumbers.every(key => value[key] === null || (typeof value[key] === 'number' && Number.isFinite(value[key])))
+    && (value.originalAccountId === undefined || typeof value.originalAccountId === 'string')
     && (value.bindingChanged === null || typeof value.bindingChanged === 'boolean')
 }
 

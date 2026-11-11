@@ -38,7 +38,7 @@ use gateway_plugin_sdk::{
 };
 use serde::Serialize;
 use serde_json::{Value, json};
-use time::{OffsetDateTime, format_description::well_known::Rfc3339};
+use time::{OffsetDateTime, UtcOffset, format_description::well_known::Rfc3339};
 
 /// 每个插件会话共享的业务配置、单调时钟和审计入口
 struct App {
@@ -49,7 +49,7 @@ struct App {
     settings: SettingsControl,
 }
 
-/// 查询时生成 UTC 展示字段，不修改持久历史的 schema 或使用浏览器本地时区
+/// 查询时补充北京时间展示，保留原始时间点及旧版 UTC 字段
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct HistoryEntry {
@@ -58,6 +58,9 @@ struct HistoryEntry {
     decision_time_utc: Option<String>,
     admitted_time_utc: Option<String>,
     completed_time_utc: Option<String>,
+    decision_time_display: Option<String>,
+    admitted_time_display: Option<String>,
+    completed_time_display: Option<String>,
 }
 
 impl App {
@@ -389,7 +392,9 @@ impl App {
                                 }
                                 .into();
                             }
-                            r.from_account_id.clone_from(&evidence.from_account_id);
+                            if evidence.from_account_id.is_some() {
+                                r.from_account_id.clone_from(&evidence.from_account_id);
+                            }
                             r.binding_changed = evidence.binding_changed;
                             if evidence.account_selection_wait_ms.is_some() {
                                 r.account_selection_wait_ms = evidence.account_selection_wait_ms;
@@ -436,6 +441,9 @@ impl App {
                 decision_time_utc: format_utc(Some(record.decision_at_ms)),
                 admitted_time_utc: format_utc(record.admitted_at_ms),
                 completed_time_utc: format_utc(record.completed_at_ms),
+                decision_time_display: format_beijing(Some(record.decision_at_ms)),
+                admitted_time_display: format_beijing(record.admitted_at_ms),
+                completed_time_display: format_beijing(record.completed_at_ms),
                 record,
             })
             .collect();
@@ -498,6 +506,19 @@ fn format_utc(timestamp_ms: Option<u64>) -> Option<String> {
         .ok()?
         .format(&Rfc3339)
         .ok()
+}
+
+fn format_beijing(timestamp_ms: Option<u64>) -> Option<String> {
+    let time = OffsetDateTime::from_unix_timestamp_nanos(i128::from(timestamp_ms?) * 1_000_000)
+        .ok()?
+        .checked_to_offset(UtcOffset::from_hms(8, 0, 0).ok()?)?;
+    Some(format!(
+        "{} {:02}:{:02}:{:02}",
+        time.date(),
+        time.hour(),
+        time.minute(),
+        time.second()
+    ))
 }
 
 fn error_code(error: &PluginFault) -> String {

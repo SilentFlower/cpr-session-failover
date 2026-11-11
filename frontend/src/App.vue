@@ -35,13 +35,32 @@ const resultOptions = [
 const records = computed(() => snapshot.value?.records ?? [])
 const changedCount = computed(() => records.value.filter(record => record.bindingChanged === true).length)
 const total = computed(() => snapshot.value?.pagination.total ?? 0)
+const metrics = computed(() => [
+  {
+    label: '匹配记录',
+    value: snapshot.value ? total.value : '—',
+    color: 'text-z-primary',
+  },
+  {
+    label: '本页已改绑',
+    value: snapshot.value ? changedCount.value : '—',
+    color: 'text-z-success',
+  },
+  {
+    label: '本页待核实',
+    value: snapshot.value
+      ? records.value.filter(row => row.bindingChanged === null).length
+      : '—',
+    color: 'text-z-warning',
+  },
+])
 
 const columns: TableColumn<HistoryRecord>[] = [
   {
-    key: 'decisionTimeUtc',
-    label: '触发时间（UTC）',
+    key: 'decisionTimeDisplay',
+    label: '触发时间',
     kind: 'datetime',
-    minWidth: 210,
+    minWidth: 176,
   },
   {
     key: 'requestId',
@@ -63,9 +82,9 @@ const columns: TableColumn<HistoryRecord>[] = [
   },
   {
     key: 'accounts',
-    label: '前账号 → 实际账号',
+    label: '账号路径',
     kind: 'identity',
-    minWidth: 180,
+    minWidth: 190,
   },
   {
     key: 'schedulerWaitMs',
@@ -156,8 +175,24 @@ onBeforeUnmount(() => {
       <p v-if="reconnectRequired && !settingsOpen" role="status" class="rounded-z bg-z-info-container p-3 text-z-sm text-z-info-on-container">
         {{ configurationWriteState === 'saved' ? '设置已保存并生效' : '保存结果待确认' }}，点击右上角「刷新页面」继续操作
       </p>
-      <ZCard>
-        <form class="flex flex-wrap items-center gap-3" @submit.prevent="search">
+      <section aria-label="切换概览" class="grid grid-cols-3 gap-2 sm:gap-4">
+        <ZCard v-for="metric in metrics" :key="metric.label">
+          <p class="text-z-xs text-z-text-secondary sm:text-z-sm">
+            {{ metric.label }}
+          </p>
+          <p class="mt-1 text-2xl font-emphasis tabular-nums" :class="metric.color">
+            {{ metric.value }}
+          </p>
+        </ZCard>
+      </section>
+      <ZCard class="min-w-0">
+        <div class="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+          <h2 class="text-z-base font-emphasis">
+            切换记录
+          </h2>
+          <span class="text-z-xs text-z-text-secondary">北京时间 · UTC+8</span>
+        </div>
+        <form class="mb-4 flex flex-wrap items-center gap-2" @submit.prevent="search">
           <ZInput
             v-model="requestId"
             aria-label="请求 ID"
@@ -181,15 +216,9 @@ onBeforeUnmount(() => {
           </ZButton>
         </form>
 
-        <div v-if="snapshot" class="mt-4 flex flex-wrap gap-x-5 gap-y-2 text-z-sm text-z-text-secondary" aria-live="polite">
-          <span>匹配历史 {{ total }} 条</span>
-          <span>本页已确认改绑 {{ changedCount }} 条</span>
-          <span>不按条数自动清理</span>
-          <span v-if="snapshot.storage.incompleteWrites">有 {{ snapshot.storage.incompleteWrites }} 次未完成写入，未计入列表</span>
-        </div>
-      </ZCard>
-
-      <ZCard>
+        <p v-if="snapshot?.storage.incompleteWrites" role="status" class="mb-3 text-z-sm text-z-warning">
+          {{ snapshot.storage.incompleteWrites }} 次未完成写入未计入列表
+        </p>
         <p v-if="snapshot?.storage.lastWriteError" role="alert" class="mb-4 rounded-z bg-z-warning-container p-3 text-z-warning-on-container">
           {{ snapshot.storage.lastWriteError }}
         </p>
@@ -208,10 +237,10 @@ onBeforeUnmount(() => {
           :expanded-row-keys="expanded"
           size="small"
         >
-          <template #decisionTimeUtc="{ row }">
+          <template #decisionTimeDisplay="{ row }">
             <div class="min-w-0 space-y-1">
-              <div class="truncate text-z-xs" :title="row.decisionTimeUtc ?? undefined">
-                {{ row.decisionTimeUtc ?? '未知' }}
+              <div class="whitespace-nowrap text-z-sm tabular-nums">
+                {{ row.decisionTimeDisplay ?? '未知' }}
               </div>
               <div class="text-z-xs text-z-text-secondary">
                 {{ relativeTime(row.decisionAtMs, now) }}
@@ -237,14 +266,20 @@ onBeforeUnmount(() => {
             </ZTag>
           </template>
           <template #accounts="{ row }">
-            <div class="space-y-1">
-              <div class="truncate text-z-xs" :title="`${row.fromAccountId ?? '未知'} → ${row.actualAccountId ?? '尚未确认'}`">
-                {{ row.fromAccountId ?? '未知' }} → {{ row.actualAccountId ?? '尚未确认' }}
-              </div>
-              <div v-if="row.proposedAccountId" class="truncate text-z-xs text-z-text-secondary" :title="row.proposedAccountId">
-                计划 {{ row.proposedAccountId }}
-              </div>
-            </div>
+            <dl class="grid grid-cols-[auto_minmax(0,1fr)] gap-x-2 gap-y-1 text-z-xs">
+              <dt class="text-z-text-secondary">
+                {{ row.fromAccountId || !row.originalAccountId ? '前绑定' : '续写原账号' }}
+              </dt>
+              <dd class="m-0 truncate font-mono" :title="row.fromAccountId ?? row.originalAccountId">
+                {{ row.fromAccountId ?? row.originalAccountId ?? '缺少证据' }}
+              </dd>
+              <dt class="text-z-text-secondary">
+                实际取得
+              </dt>
+              <dd class="m-0 truncate font-mono" :title="row.actualAccountId ?? undefined">
+                {{ row.actualAccountId ?? '尚未确认' }}
+              </dd>
+            </dl>
           </template>
           <template #schedulerWaitMs="{ row }">
             {{ duration(row.schedulerWaitMs) }}

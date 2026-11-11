@@ -320,14 +320,18 @@ impl Policy {
                 return Action::Delegate;
             }
             pending.blocked_logged = true;
-            return Action::RecordOnly(Record::blocked(
+            let mut record = Record::blocked(
                 input,
                 &pending.identity.session_hash,
                 &pending.key_id,
                 waited,
                 wall_ms,
                 reason,
-            ));
+            );
+            record
+                .original_account_id
+                .clone_from(&pending.native_queue_account);
+            return Action::RecordOnly(record);
         }
         let candidate = input
             .candidates
@@ -345,8 +349,10 @@ impl Policy {
             wall_ms,
             &candidate.account_id,
         );
-        if replay_from.is_some() {
+        if let Some(original) = replay_from {
             record.reason = "native_queue_replay".into();
+            // 原生续写的归属可直接观察，当前会话改绑仍须由宿主诊断独立确认
+            record.original_account_id = Some(original);
         }
         session.reserved = Some(Reservation {
             request_id: input.request_id.clone(),

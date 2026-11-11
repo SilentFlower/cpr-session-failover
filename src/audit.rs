@@ -41,6 +41,8 @@ pub struct Record {
     pub proposed_account_id: Option<String>,
     pub actual_account_id: Option<String>,
     pub from_account_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_account_id: Option<String>,
     pub admitted_at_ms: Option<u64>,
     pub completed_at_ms: Option<u64>,
     pub outcome: Option<String>,
@@ -86,6 +88,7 @@ impl Record {
             proposed_account_id: Some(account_id.into()),
             actual_account_id: None,
             from_account_id: None,
+            original_account_id: None,
             admitted_at_ms: None,
             completed_at_ms: None,
             outcome: None,

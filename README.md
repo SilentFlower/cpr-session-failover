@@ -77,7 +77,7 @@ CPR 未公开真实入队起点和绑定版本，纯插件使用首次选号后�
 
 [记录页](https://github.com/SilentFlower/cpr-session-failover/releases/download/v0.3.2/records-light.png) · [设置弹窗](https://github.com/SilentFlower/cpr-session-failover/releases/download/v0.3.2/settings-dialog.png) · [高级设置](https://github.com/SilentFlower/cpr-session-failover/releases/download/v0.3.2/settings-advanced.png) · [记录详情](https://github.com/SilentFlower/cpr-session-failover/releases/download/v0.3.2/records-details.png)，截图使用隔离实例中的模拟记录
 
-页面时间由插件后端按 UTC 显示。仅在提出迁移或触发迁移保护时记录，直接取得账号的普通请求不会出现在列表中。匹配总数覆盖所有保留历史，已确认改绑数量仅统计当前页，均不能代表真实累计切换次数
+页面时间由插件后端按北京时间（UTC+8）显示。仅在提出迁移或触发迁移保护时记录，直接取得账号的普通请求不会出现在列表中。匹配总数覆盖所有保留历史，已确认改绑数量仅统计当前页，均不能代表真实累计切换次数
 
 也可在运行 CPR 的环境执行：
 
@@ -110,6 +110,7 @@ GET /api/admin/plugins/extensions/{instanceId}/{artifactSha256}/{revision}/api/h
 | `proposedAccountId` | 插件计划选择的目标，不能据此判断成功 |
 | `actualAccountId`、`admittedAtMs` | 宿主 attempt 确认已经取得的实际账号与时间 |
 | `fromAccountId`、`bindingChanged` | 从对应尝试的宿主诊断核实的前账号，以及该迁移意图是否得到改绑证据确认 |
+| `originalAccountId` | 原生续写已确认的原账号，用于显示续写路径，独立于改绑证据 |
 | `outcome`、`requestErrorCode` | 最终请求结果和已知错误分类 |
 | `errorCode` | 取得账号后该尝试返回的错误分类 |
 | `evidenceStatus` | `pending` 待补齐，`verified` 已核实，`unavailable` 缺少证据，`not_required` 为受限请求 |

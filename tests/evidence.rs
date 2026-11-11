@@ -124,3 +124,15 @@ fn missing_routing_policy_keeps_binding_change_unknown() {
         None
     );
 }
+
+#[test]
+fn explicit_binding_event_supplies_the_previous_account_when_selection_was_evicted() {
+    let document = json!({"schemaVersion":5,"requests":[{"requestId":"req_test","evidence":{"trace":{"events":[
+        {"stage":"account.binding.migrated","attemptIndex":1,"data":{"fromAccountId":"wrong-attempt","toAccountId":"B"}},
+        {"stage":"account.binding.migrated","attemptIndex":2,"data":{"fromAccountId":"A","toAccountId":"B"}},
+        {"stage":"account.binding.migrated","attemptIndex":2,"data":{"fromAccountId":"wrong-target","toAccountId":"C"}}
+    ]}}}]});
+    let result = evidence(&document, &record()).unwrap();
+    assert_eq!(result.from_account_id.as_deref(), Some("A"));
+    assert_eq!(result.binding_changed, Some(true));
+}
