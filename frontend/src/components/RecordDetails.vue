@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { HistoryRecord } from '../api/modules/history'
 import { computed } from 'vue'
+import { groupText } from '../groups'
 import { duration, outcomeText, reasonText, stageText } from '../presenter'
 
 const props = defineProps<{ record: HistoryRecord }>()
@@ -26,6 +27,18 @@ function account(name: string | null, email: string | null, id: string | null | 
 }
 
 const fields = computed(() => [
+  {
+    label: '触发分组',
+    value: groupText(props.record),
+  },
+  ...(props.record.routingGroupRefs.length
+    ? [
+        {
+          label: '触发分组 ID',
+          value: props.record.routingGroupRefs.join('、'),
+        },
+      ]
+    : []),
   { label: '请求 ID', value: props.record.requestId },
   {
     label: '尝试序号',

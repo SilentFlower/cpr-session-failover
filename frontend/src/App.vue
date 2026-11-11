@@ -8,6 +8,7 @@ import { getHistory } from './api/modules/history'
 import { configurationWriteState } from './api/request'
 import RecordDetails from './components/RecordDetails.vue'
 import SettingsDialog from './components/SettingsDialog.vue'
+import { groupText } from './groups'
 import { bindingResult, duration, outcomeText, relativeTime, stageText } from './presenter'
 
 const settingsOpen = ref(false)
@@ -68,6 +69,7 @@ const columns: TableColumn<HistoryRecord>[] = [
     kind: 'identity',
     minWidth: 190,
   },
+  { key: 'routingGroups', label: '触发分组', minWidth: 150 },
   {
     key: 'stage',
     label: '调度阶段',
@@ -256,6 +258,9 @@ onBeforeUnmount(() => {
                 {{ row.model ?? '未知模型' }}
               </div>
             </div>
+          </template>
+          <template #routingGroups="{ row }">
+            <span class="block truncate text-z-xs" :title="groupText(row)">{{ groupText(row) }}</span>
           </template>
           <template #stage="{ row }">
             {{ stageText(row.stage) }}

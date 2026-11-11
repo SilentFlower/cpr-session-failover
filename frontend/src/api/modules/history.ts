@@ -2,6 +2,9 @@ import { isObject, request } from '../request'
 
 /** 对应插件持久历史中的一条记录，空值保留未知含义 */
 export interface HistoryRecord {
+  routingScope: string | null
+  routingGroupRefs: string[]
+  routingGroupNamesSnapshot: string[]
   id: string
   requestId: string
   attemptIndex: number
@@ -63,6 +66,7 @@ function isRecord(value: unknown): value is HistoryRecord {
   ]
   const numbers = ['attemptIndex', 'decisionAtMs', 'schedulerWaitMs']
   const nullableText = [
+    'routingScope',
     'decisionTimeDisplay',
     'admittedTimeDisplay',
     'completedTimeDisplay',
@@ -88,7 +92,8 @@ function isRecord(value: unknown): value is HistoryRecord {
     'accountSelectionWaitMs',
     'accountQueueWaitMs',
   ]
-  return text.every(key => typeof value[key] === 'string')
+  return [value.routingGroupRefs, value.routingGroupNamesSnapshot].every(groups => Array.isArray(groups) && groups.every(group => typeof group === 'string'))
+    && text.every(key => typeof value[key] === 'string')
     && numbers.every(key => typeof value[key] === 'number' && Number.isFinite(value[key]))
     && nullableText.every(key => value[key] === null || typeof value[key] === 'string')
     && nullableNumbers.every(key => value[key] === null || (typeof value[key] === 'number' && Number.isFinite(value[key])))

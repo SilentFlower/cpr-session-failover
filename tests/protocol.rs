@@ -38,6 +38,8 @@ struct Host {
     hold_put: bool,
     held_put: Vec<u64>,
     chunks: VecDeque<Vec<u8>>,
+    http_bodies: HashMap<String, VecDeque<Vec<u8>>>,
+    routing_key: String,
     call_ids: HashMap<u64, u64>,
     next_call_id: u64,
     host_queue_failover: bool,
@@ -70,6 +72,8 @@ impl Host {
             hold_put: false,
             held_put: vec![],
             chunks: VecDeque::new(),
+            http_bodies: HashMap::new(),
+            routing_key: "key_test".into(),
             call_ids: HashMap::new(),
             next_call_id: 1,
             host_queue_failover: true,
@@ -287,6 +291,26 @@ impl Host {
                 }
                 "host.http.dispatch" => {
                     assert_eq!(params["method"], "GET");
+                    if let Some(query) = params["uri"]
+                        .as_str()
+                        .unwrap()
+                        .strip_prefix("/api/admin/usage/records/detail?")
+                    {
+                        let request = form_urlencoded::parse(query.as_bytes())
+                            .find(|(k, _)| k == "id")
+                            .unwrap()
+                            .1
+                            .into_owned();
+                        let status = if request == "req_one" { 200 } else { 404 };
+                        let value = json!({"code":status,"data":{"requestId":request,"clientApiKeyId":self.routing_key,"routingScope":"groups","routingGroupRefs":["group-old","group-other"],"routingGroupNamesSnapshot":["历史 VIP","协作组"]}});
+                        let handle = format!("groups-{id}");
+                        self.http_bodies.insert(
+                            handle.clone(),
+                            VecDeque::from([serde_json::to_vec(&value).unwrap()]),
+                        );
+                        self.respond(id, json!({"status":status,"version":"HTTP/1.1","headers":[],"body":{"kind":"handle","handle":handle},"response":null,"session":false}), vec![]).await;
+                        return;
+                    }
                     assert_eq!(
                         params["uri"],
                         "/api/admin/diagnostics/export?requestId=req_one"
@@ -295,7 +319,12 @@ impl Host {
                     self.respond(id, json!({"status":200,"version":"HTTP/1.1","headers":[],"body":{"kind":"handle","handle":"diagnostic_body"},"response":null,"session":false}), vec![]).await;
                 }
                 "host.http.body_read" => {
-                    let chunk = self.chunks.pop_front();
+                    let handle = params["handle"].as_str().unwrap();
+                    let chunk = if let Some(chunks) = self.http_bodies.get_mut(handle) {
+                        chunks.pop_front()
+                    } else {
+                        self.chunks.pop_front()
+                    };
                     self.respond(
                         id,
                         json!({"eof":chunk.is_none(),"trailers":null}),
@@ -605,11 +634,25 @@ async fn migration_records_actual_admission_and_survives_restart() {
         "B@example.test"
     );
     assert!(history["records"][0]["originalAccountEmail"].is_null());
+    assert_eq!(history["records"][0]["routingScope"], "groups");
+    assert_eq!(
+        history["records"][0]["routingGroupNamesSnapshot"],
+        json!(["历史 VIP", "协作组"])
+    );
+    assert_eq!(
+        history["records"][0]["routingGroupRefs"],
+        json!(["group-old", "group-other"])
+    );
     restarted.call(61, Stage::Management, "management.handle", None, json!({"method":"GET","path":"history","query":"limit=10&requestId=req_one","content_type":null,"headers":[]}), vec![]).await;
     let (response, payload) = restarted.result(61).await;
     assert_eq!(response["status"], 200);
     let history: Value = serde_json::from_slice(&payload).unwrap();
     assert_eq!(history["records"][0]["requestId"], "req_one");
+    restarted.routing_key = "another-key".into();
+    let unmatched = restarted.history(63, "limit=10&requestId=req_one").await;
+    assert!(unmatched["records"][0]["routingScope"].is_null());
+    assert_eq!(unmatched["records"][0]["routingGroupRefs"], json!([]));
+    restarted.routing_key = "key_test".into();
     assert_eq!(
         history["records"][0]["completedTimeDisplay"],
         "1970-01-02 00:00:00"

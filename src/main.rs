@@ -1,5 +1,8 @@
 //! 插件 RPC 入口，组合严格绑定、延迟选号与持久切换记录
 
+mod host_json;
+mod routing;
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     error::Error,
@@ -64,6 +67,8 @@ struct HistoryEntry {
     proposed_account_email: Option<String>,
     actual_account_name: Option<String>,
     actual_account_email: Option<String>,
+    #[serde(flatten)]
+    routing: routing::Routing,
     decision_time_utc: Option<String>,
     admitted_time_utc: Option<String>,
     completed_time_utc: Option<String>,
@@ -443,7 +448,15 @@ impl App {
         let as_of = query.as_of;
         let limit = query.limit;
         let history = self.audit.query(host, query).await?;
-        let profiles = account_profiles(host, &history.records).await;
+        let requests: Vec<_> = history
+            .records
+            .iter()
+            .map(|r| (r.request_id.clone(), r.client_key_id.clone()))
+            .collect();
+        let (profiles, groups) = tokio::join!(
+            account_profiles(host, &history.records),
+            routing::load(host, &requests)
+        );
         let name = |id: &Option<String>| {
             id.as_ref()
                 .and_then(|id| profiles.get(id))
@@ -458,6 +471,7 @@ impl App {
             .records
             .into_iter()
             .map(|record| HistoryEntry {
+                routing: groups.get(&record.request_id).cloned().unwrap_or_default(),
                 from_account_name: name(&record.from_account_id),
                 from_account_email: email(&record.from_account_id),
                 original_account_name: name(&record.original_account_id),
