@@ -51,6 +51,35 @@ fn frame_turn_metadata_overrides_connection_context() {
 }
 
 #[test]
+fn current_frame_identity_and_replay_ignore_stale_handshake_metadata() {
+    let headers = [MiddlewareHeader {
+        name: "x-codex-turn-metadata".into(),
+        value: br#"{"session_id":"old","thread_id":"old","turn_id":"old-turn"}"#.to_vec(),
+    }];
+    let body = br#"{"model":"test-model","previous_response_id":"resp_A","client_metadata":{"x-codex-turn-metadata":"{\"session_id\":\"root\",\"thread_id\":\"root\",\"turn_id\":\"current-turn\"}"}}"#;
+    let actual = identify("key", &headers, body).unwrap();
+    let expected = identify("key", &[], body).unwrap();
+    assert_eq!(actual, expected);
+    assert!(actual.replay_turn.is_some());
+}
+
+#[test]
+fn explicit_client_identity_precedes_turn_metadata() {
+    let headers = [MiddlewareHeader {
+        name: "x-codex-turn-metadata".into(),
+        value: br#"{"session_id":"handshake"}"#.to_vec(),
+    }];
+    let actual = identify(
+        "key",
+        &headers,
+        br#"{"client_metadata":{"session_id":"root"}}"#,
+    )
+    .unwrap();
+    let expected = identify("key", &[], br#"{"session_id":"root"}"#).unwrap();
+    assert_eq!(actual.session_hash, expected.session_hash);
+}
+
+#[test]
 fn native_reference_and_prewarm_are_conservatively_protected() {
     for (body, reason) in [
         (

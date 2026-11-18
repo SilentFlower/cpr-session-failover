@@ -3,10 +3,10 @@
   "publisher": "silentflower",
   "name": "session-failover",
   "displayName": "会话排队迁移",
-  "version": "0.4.4",
+  "version": "0.4.5",
   "description": "严格会话绑定下限时等待、换号改绑与切换记录",
   "license": "Apache-2.0",
-  "engines": { "codex-proxy-rs": ">=3.41.0" },
+  "engines": { "codex-proxy-rs": ">=3.52.1" },
   "main": "bin/cpr-session-failover",
   "runtime": "trustedProcess",
   "resources": {
@@ -19,7 +19,7 @@
   },
   "contributes": {
     "middleware": { "version": 6, "stages": ["request", "attempt", "websocket"], "inputFormats": ["openai"], "outputFormats": ["openai"] },
-    "scheduler": { "version": 3 },
+    "scheduler": { "version": 4 },
     "management": { "version": 2 },
     "command_line": {},
     "maintenance": {}

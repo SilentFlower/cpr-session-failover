@@ -6,7 +6,7 @@
 
 ## 安装
 
-要求 CPR **>=3.41.0**，发行包提供 Linux x86_64 版本，运行环境需 glibc >=2.34
+要求 CPR **>=3.52.1**，发行包提供 Linux x86_64 版本，运行环境需 glibc >=2.34
 
 1. 打开 CPR「插件管理」→「安装」→「GitHub」
 2. 仓库填写 `SilentFlower/cpr-session-failover`，选择稳定版附件

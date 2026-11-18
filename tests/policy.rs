@@ -4,7 +4,9 @@ use cpr_session_failover::{
     identity::Identity,
     policy::{Action, Config, Policy},
 };
-use gateway_plugin_sdk::call::policy::{AccountScheduleCandidate, AccountScheduleRequest};
+use gateway_plugin_sdk::call::policy::{
+    AccountScheduleCandidate, AccountScheduleRequest, AccountScheduleRole,
+};
 
 fn input(id: &str) -> AccountScheduleRequest {
     AccountScheduleRequest {
@@ -19,6 +21,12 @@ fn input(id: &str) -> AccountScheduleRequest {
 fn candidate(id: &str, available: bool, used: u32, max: u32) -> AccountScheduleCandidate {
     AccountScheduleCandidate {
         account_id: id.into(),
+        session_bound: id == "A",
+        role: if id == "A" {
+            AccountScheduleRole::FollowOnly
+        } else {
+            AccountScheduleRole::Ordinary
+        },
         available,
         weight: 1,
         in_flight: used,

@@ -1,6 +1,6 @@
 # 开发与构建
 
-Rust 仅通过公开 `gateway-plugin-sdk` 接入宿主，固定版本为 `789609dd53663b323e43567d2476f7f83b6b77a1`，不链接宿主 Core、Store 或 Provider
+Rust 仅通过公开 `gateway-plugin-sdk` 接入宿主，固定版本为 `38446e8a0c1745b59b4c7cc2407f3ff5ff3cd77a`，不链接宿主 Core、Store 或 Provider
 
 工具链为 Rust 1.99.1、Node.js 26.13.0 和 pnpm 12.6.0，`rust-toolchain.toml` 会选择 Rust 版本。页面使用 Vue 3 与固定发布包 `@codex-proxy/ui` v0.8.0，依赖和锁文件由 `frontend/` 管理
 

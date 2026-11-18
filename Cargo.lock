@@ -49,7 +49,7 @@ checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
 
 [[package]]
 name = "cpr-session-failover"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "form_urlencoded",
  "gateway-plugin-sdk",
@@ -167,7 +167,7 @@ dependencies = [
 [[package]]
 name = "gateway-plugin-sdk"
 version = "0.1.0"
-source = "git+https://github.com/zyycn/codex-proxy-rs.git?rev=789609dd53663b323e43567d2476f7f83b6b77a1#789609dd53663b323e43567d2476f7f83b6b77a1"
+source = "git+https://github.com/zyycn/codex-proxy-rs.git?rev=38446e8a0c1745b59b4c7cc2407f3ff5ff3cd77a#38446e8a0c1745b59b4c7cc2407f3ff5ff3cd77a"
 dependencies = [
  "base64",
  "semver",

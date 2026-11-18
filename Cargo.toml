@@ -1,13 +1,13 @@
 [package]
 name = "cpr-session-failover"
-version = "0.4.4"
+version = "0.4.5"
 edition = "2024"
 rust-version = "1.99.1"
 license = "Apache-2.0"
 publish = false
 
 [dependencies]
-gateway-plugin-sdk = { git = "https://github.com/zyycn/codex-proxy-rs.git", rev = "789609dd53663b323e43567d2476f7f83b6b77a1", features = ["io"] }
+gateway-plugin-sdk = { git = "https://github.com/zyycn/codex-proxy-rs.git", rev = "38446e8a0c1745b59b4c7cc2407f3ff5ff3cd77a", features = ["io"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.150", features = ["raw_value"] }
 sha2 = "0.10.9"

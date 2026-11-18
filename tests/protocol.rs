@@ -434,8 +434,8 @@ impl Host {
 
     async fn send_schedule(&mut self, id: u64, request: &str) {
         self.send_candidates(id, request, json!([
-            {"account_id":"A","available":false,"weight":1,"in_flight":3,"maximum_concurrency":3},
-            {"account_id":"B","available":true,"weight":1,"in_flight":0,"maximum_concurrency":3}
+            {"account_id":"A","session_bound":true,"role":"follow_only","available":false,"weight":1,"in_flight":3,"maximum_concurrency":3},
+            {"account_id":"B","session_bound":false,"role":"ordinary","available":true,"weight":1,"in_flight":0,"maximum_concurrency":3}
         ])).await;
     }
 
@@ -859,7 +859,7 @@ async fn native_queue_timeout_prompts_one_full_replay_and_selects_the_backup() {
         }
         serde_json::to_vec(&value).unwrap()
     };
-    let account_a = json!({"account_id":"A","available":false,"weight":1,"in_flight":3,"maximum_concurrency":3});
+    let account_a = json!({"account_id":"A","session_bound":true,"role":"follow_only","available":false,"weight":1,"in_flight":3,"maximum_concurrency":3});
     for (offset, host_queue_failover, has_backup) in [
         (0, true, true),
         (30, true, false),

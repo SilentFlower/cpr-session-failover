@@ -21,7 +21,11 @@ struct Metadata {
     turn_id: Option<String>,
     #[serde(rename = "x-openai-subagent", alias = "subagent_kind")]
     subagent: Option<String>,
-    #[serde(rename = "x-codex-turn-metadata", alias = "turn_metadata")]
+    #[serde(
+        rename = "x-codex-turn-metadata",
+        alias = "turn_metadata",
+        alias = "turnMetadata"
+    )]
     turn_metadata: Option<String>,
 }
 
@@ -78,11 +82,13 @@ pub fn identify(key_id: &str, headers: &[MiddlewareHeader], body: &[u8]) -> Opti
     let body: Envelope<'_> = serde_json::from_slice(body).ok()?;
     let client = body.client_metadata.as_ref();
     let context = body.context.as_ref();
-    let session = turn_session(header(headers, "x-codex-turn-metadata"))
-        .or_else(|| text(client.and_then(|m| m.session_id.as_deref())).map(str::to_owned))
+    // 当前正文的逻辑身份优先，握手元数据可能属于连接建立时的旧轮次
+    let session = text(client.and_then(|metadata| metadata.session_id.as_deref()))
+        .map(str::to_owned)
         .or_else(|| turn_session(body.turn_metadata.as_deref()))
-        .or_else(|| turn_session(client.and_then(|m| m.turn_metadata.as_deref())))
-        .or_else(|| turn_session(context.and_then(|m| m.turn_metadata.as_deref())))
+        .or_else(|| turn_session(client.and_then(|metadata| metadata.turn_metadata.as_deref())))
+        .or_else(|| turn_session(header(headers, "x-codex-turn-metadata")))
+        .or_else(|| turn_session(context.and_then(|metadata| metadata.turn_metadata.as_deref())))
         .or_else(|| text(body.session_id.as_deref()).map(str::to_owned))
         .or_else(|| header(headers, "session-id").map(str::to_owned))
         .or_else(|| text(context.and_then(|m| m.session_id.as_deref())).map(str::to_owned))?;
@@ -133,48 +139,45 @@ fn replay_turn(
     session_hash: &str,
 ) -> Option<[u8; 32]> {
     let client = body.client_metadata.as_ref();
-    let metadata = [
-        header(headers, "x-codex-turn-metadata"),
-        body.turn_metadata.as_deref(),
-        client.and_then(|m| m.turn_metadata.as_deref()),
-        body.context
-            .as_ref()
-            .and_then(|m| m.turn_metadata.as_deref()),
-    ]
-    .map(|value| value.and_then(|value| serde_json::from_str::<Metadata>(value).ok()));
+    // 重发机会只关联本轮元数据，不能从旧握手拼接线程或轮次
+    let metadata = body
+        .turn_metadata
+        .as_deref()
+        .or_else(|| client.and_then(|metadata| metadata.turn_metadata.as_deref()))
+        .or_else(|| header(headers, "x-codex-turn-metadata"))
+        .or_else(|| {
+            body.context
+                .as_ref()
+                .and_then(|metadata| metadata.turn_metadata.as_deref())
+        })
+        .and_then(|metadata| serde_json::from_str::<Metadata>(metadata).ok());
     if header(headers, "x-openai-subagent").is_some()
         || client
             .into_iter()
-            .chain(metadata.iter().flatten())
-            .any(|m| text(m.subagent.as_deref()).is_some())
+            .chain(metadata.as_ref())
+            .any(|metadata| text(metadata.subagent.as_deref()).is_some())
     {
         return None;
     }
-    let thread = metadata[0]
-        .as_ref()
-        .and_then(|m| text(m.thread_id.as_deref()))
-        .or_else(|| header(headers, "thread-id"))
-        .or_else(|| client.and_then(|m| text(m.thread_id.as_deref())))
+    let thread = client
+        .and_then(|metadata| text(metadata.thread_id.as_deref()))
         .or_else(|| {
-            metadata[1..]
-                .iter()
-                .flatten()
-                .find_map(|m| text(m.thread_id.as_deref()))
-        })?;
+            metadata
+                .as_ref()
+                .and_then(|metadata| text(metadata.thread_id.as_deref()))
+        })
+        .or_else(|| header(headers, "thread-id"))?;
     if thread != session {
         return None;
     }
-    let turn = metadata[0]
-        .as_ref()
-        .and_then(|m| text(m.turn_id.as_deref()))
-        .or_else(|| header(headers, "x-client-turn-id"))
-        .or_else(|| client.and_then(|m| text(m.turn_id.as_deref())))
+    let turn = client
+        .and_then(|metadata| text(metadata.turn_id.as_deref()))
         .or_else(|| {
-            metadata[1..]
-                .iter()
-                .flatten()
-                .find_map(|m| text(m.turn_id.as_deref()))
-        })?;
+            metadata
+                .as_ref()
+                .and_then(|metadata| text(metadata.turn_id.as_deref()))
+        })
+        .or_else(|| header(headers, "x-client-turn-id"))?;
     let model = text(body.model.as_deref())?;
     let mut hash = Sha256::new();
     hash.update(b"cpr-session-failover-replay-v1\0");
