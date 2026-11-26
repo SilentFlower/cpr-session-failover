@@ -115,8 +115,14 @@ impl App {
                 .settings
                 .get_mut("runtime")
                 .ok_or_else(|| fault("宿主没有提供请求运行设置"))?;
+            // CPR 3.55 将亲和设置推广到多个平台，旧版宿主仍要求原字段名
+            let affinity_field = if runtime.get("account_affinity").is_some() {
+                "account_affinity"
+            } else {
+                "openai_account_affinity"
+            };
             let mode = runtime
-                .get_mut("openai_account_affinity")
+                .get_mut(affinity_field)
                 .ok_or_else(|| fault("宿主缺少账号亲和设置"))?;
             // 只改本次模型调用，已有原生续写也按严格绑定复核，不能把会话拉回旧账号
             *mode = json!("strict");

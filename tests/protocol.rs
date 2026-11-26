@@ -43,6 +43,7 @@ struct Host {
     call_ids: HashMap<u64, u64>,
     next_call_id: u64,
     host_queue_failover: bool,
+    affinity_field: &'static str,
 }
 
 impl Host {
@@ -77,6 +78,7 @@ impl Host {
             call_ids: HashMap::new(),
             next_call_id: 1,
             host_queue_failover: true,
+            affinity_field: "account_affinity",
         };
         let manifest = Manifest::from_author_slice(include_bytes!("../plugin.json")).unwrap();
         host.send(
@@ -395,7 +397,7 @@ impl Host {
         let settings = if attempt {
             Value::Null
         } else {
-            json!({"runtime":{"openai_account_affinity":"preferred","max_waiting_per_account":10,"account_queue_timeout_seconds":20,"switch_account_on_queue_failure":self.host_queue_failover},"fast_mode":"default","client_limits":{},"timeout_ms":null})
+            json!({"runtime":{(self.affinity_field):"preferred","max_waiting_per_account":10,"account_queue_timeout_seconds":20,"switch_account_on_queue_failure":self.host_queue_failover},"fast_mode":"default","client_limits":{},"timeout_ms":null})
         };
         let params = json!({"settings_sources":{},"settings":settings,"request_id":request,"client_key_id":"key_test","account_group_ids":[],"mount":if attempt {"attempt"} else {"request"},"attempt_index":if attempt {Some(1)} else {None},"operation":"generate","protocol":"openai","endpoint":"/v1/responses","transport":transport,"provider":if attempt {Some("openai")} else {None},"model":"test-model","account_id":if attempt {Some("B")} else {None},"headers":[]});
         self.call(
@@ -414,10 +416,7 @@ impl Host {
         self.wait_next(id).await;
         if !attempt {
             let params = &self.next[&id].1;
-            assert_eq!(
-                params["settings"]["runtime"]["openai_account_affinity"],
-                "strict"
-            );
+            assert_eq!(params["settings"]["runtime"][self.affinity_field], "strict");
             assert_eq!(
                 params["settings"]["runtime"]["switch_account_on_queue_failure"],
                 self.host_queue_failover
@@ -860,13 +859,14 @@ async fn native_queue_timeout_prompts_one_full_replay_and_selects_the_backup() {
         serde_json::to_vec(&value).unwrap()
     };
     let account_a = json!({"account_id":"A","session_bound":true,"role":"follow_only","available":false,"weight":1,"in_flight":3,"maximum_concurrency":3});
-    for (offset, host_queue_failover, has_backup) in [
-        (0, true, true),
-        (30, true, false),
-        (60, false, true),
-        (90, false, false),
+    for (offset, host_queue_failover, has_backup, affinity_field) in [
+        (0, true, true, "account_affinity"),
+        (30, true, false, "openai_account_affinity"),
+        (60, false, true, "openai_account_affinity"),
+        (90, false, false, "account_affinity"),
     ] {
         host.host_queue_failover = host_queue_failover;
+        host.affinity_field = affinity_field;
         let request = format!("req_native_{offset}");
         let turn = format!("turn_{offset}");
         host.model_input_with_transport(
