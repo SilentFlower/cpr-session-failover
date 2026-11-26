@@ -1,7 +1,12 @@
 //! 从已认证模型请求读取显式会话身份，不从缓存键或认证头推测绑定
 
+use std::fmt::Formatter;
+
 use gateway_plugin_sdk::call::middleware::MiddlewareHeader;
-use serde::Deserialize;
+use serde::{
+    Deserialize, Deserializer,
+    de::{SeqAccess, Visitor},
+};
 use serde_json::{Value, value::RawValue};
 use sha2::{Digest, Sha256};
 
@@ -51,6 +56,37 @@ struct InputKind {
     kind: Option<String>,
 }
 
+#[derive(Default)]
+struct InputSummary {
+    has_items: bool,
+    has_reference: bool,
+}
+
+impl<'de> Deserialize<'de> for InputSummary {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct InputVisitor;
+
+        impl<'de> Visitor<'de> for InputVisitor {
+            type Value = InputSummary;
+
+            fn expecting(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("模型输入数组")
+            }
+
+            fn visit_seq<A: SeqAccess<'de>>(self, mut input: A) -> Result<Self::Value, A::Error> {
+                let mut summary = InputSummary::default();
+                while let Some(item) = input.next_element::<InputKind>()? {
+                    summary.has_items = true;
+                    summary.has_reference |= item.kind.as_deref() == Some("item_reference");
+                }
+                Ok(summary)
+            }
+        }
+
+        deserializer.deserialize_seq(InputVisitor)
+    }
+}
+
 fn text(value: Option<&str>) -> Option<&str> {
     value
         .map(str::trim)
@@ -76,6 +112,21 @@ fn turn_session(metadata: Option<&str>) -> Option<String> {
 /// @param body Responses 请求正文，只解析身份及续写标记
 /// @return 缺少可靠身份时返回 None，原生续写仍返回身份但标记禁止插件迁移
 pub fn identify(key_id: &str, headers: &[MiddlewareHeader], body: &[u8]) -> Option<Identity> {
+    identify_request(key_id, headers, body, true)
+}
+
+/// 读取显式会话身份，并按入口需要计算原生续写重发标识
+/// @param key_id 已认证的稳定 Key ID
+/// @param headers 模型请求当前有效头部
+/// @param body 模型请求正文
+/// @param allow_replay 是否允许为当前入口识别同轮重发
+/// @return 会话身份及适用的限制，缺少可靠身份时返回 None
+pub fn identify_request(
+    key_id: &str,
+    headers: &[MiddlewareHeader],
+    body: &[u8],
+    allow_replay: bool,
+) -> Option<Identity> {
     if key_id.is_empty() || key_id.len() > 128 {
         return None;
     }
@@ -97,34 +148,34 @@ pub fn identify(key_id: &str, headers: &[MiddlewareHeader], body: &[u8]) -> Opti
     hash.update(key_id.as_bytes());
     hash.update(b"\0");
     hash.update(session.as_bytes());
-    let items = body
-        .input
-        .filter(|v| v.get().trim_start().starts_with('['))
-        .and_then(|v| serde_json::from_str::<Vec<InputKind>>(v.get()).ok());
-    let references = items.as_ref().is_some_and(|items| {
-        items
-            .iter()
-            .any(|i| i.kind.as_deref() == Some("item_reference"))
-    });
     let native = text(body.previous_response_id.as_deref()).is_some();
+    let prewarm = body.generate == Some(false);
+    let can_replay = allow_replay && !prewarm;
+    // 已确认原生续写时，仅重发资格还取决于输入中的引用条目
+    let input = if !native || can_replay {
+        body.input
+            .filter(|value| value.get().trim_start().starts_with('['))
+            .and_then(|value| serde_json::from_str::<InputSummary>(value.get()).ok())
+            .unwrap_or_default()
+    } else {
+        InputSummary::default()
+    };
     let blocked_reason = if native {
         Some("native_continuation".into())
-    } else if references {
+    } else if input.has_reference {
         Some("item_reference".into())
-    } else if body.generate == Some(false) {
+    } else if prewarm {
         Some("prewarm".into())
     } else {
         None
     };
     let session_hash = format!("{:x}", hash.finalize());
     // 只接受同一轮可识别的根线程；引用输入和预热不参与恢复
-    let replay_turn = (!references
-        && body.generate != Some(false)
-        && (native
-            || (body.previous_response_id.is_none()
-                && items.is_some_and(|items| !items.is_empty()))))
-    .then(|| replay_turn(headers, &body, &session, &session_hash))
-    .flatten();
+    let replay_turn = (can_replay
+        && !input.has_reference
+        && (native || (body.previous_response_id.is_none() && input.has_items)))
+        .then(|| replay_turn(headers, &body, &session, &session_hash))
+        .flatten();
     Some(Identity {
         session_hash,
         blocked_reason,

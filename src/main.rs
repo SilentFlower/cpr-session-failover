@@ -14,7 +14,7 @@ use std::{
 use cpr_session_failover::{
     audit::{Audit, HistoryQuery, Record, metadata},
     diagnostics, fault,
-    identity::identify,
+    identity::identify_request,
     policy::{Action, Config, Policy},
     settings::SettingsControl,
 };
@@ -43,6 +43,7 @@ use gateway_plugin_sdk::{
 use serde::Serialize;
 use serde_json::{Value, json};
 use time::{OffsetDateTime, UtcOffset, format_description::well_known::Rfc3339};
+use tokio::io::{BufReader, BufWriter, stdin, stdout};
 
 /// 每个插件会话共享的业务配置、单调时钟和审计入口
 struct App {
@@ -100,15 +101,13 @@ impl App {
                 call.request.head.endpoint.as_str(),
                 "/v1/responses" | "/v1/chat/completions"
             )
-            && let Some(mut identity) = identify(
+            && let Some(mut identity) = identify_request(
                 &call.request.head.client_key_id,
                 &call.request.head.headers,
                 &call.request.body,
+                websocket_response,
             )
         {
-            if !websocket_response {
-                identity.replay_turn = None;
-            }
             let runtime = call
                 .request
                 .head
@@ -852,9 +851,10 @@ async fn management(
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn Error>> {
+    // 合并 RPC 帧内的短读写，每个完整输出帧仍由 SDK 刷新
     let mut session = PluginSession::accept(
-        tokio::io::stdin(),
-        tokio::io::stdout(),
+        BufReader::new(stdin()),
+        BufWriter::new(stdout()),
         SessionConfig::default(),
     )
     .await?;

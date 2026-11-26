@@ -845,6 +845,20 @@ async fn settings_reject_incomplete_or_foreign_input_before_native_dispatch() {
 }
 
 #[tokio::test]
+async fn large_request_preserves_original_body_and_response_stream() {
+    let mut host = Host::start(HashMap::new(), 0).await;
+    let body = serde_json::to_vec(&json!({
+        "model": "test-model",
+        "session_id": "large-request",
+        "input": [{"type": "message", "role": "user", "content": "x".repeat(5 * 1024 * 1024)}],
+    }))
+    .unwrap();
+    host.model_input(10, "req_large", false, body).await;
+    host.finish_next(10).await;
+    host.stop().await;
+}
+
+#[tokio::test]
 async fn native_queue_timeout_prompts_one_full_replay_and_selects_the_backup() {
     let mut host = Host::start(HashMap::new(), 0).await;
     let body = |turn: &str, previous: bool| {

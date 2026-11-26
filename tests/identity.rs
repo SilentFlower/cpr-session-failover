@@ -1,6 +1,6 @@
 //! 验证显式身份、Key 隔离、逻辑元数据优先级与续写标记
 
-use cpr_session_failover::identity::identify;
+use cpr_session_failover::identity::{identify, identify_request};
 use gateway_plugin_sdk::call::middleware::MiddlewareHeader;
 
 #[test]
@@ -133,4 +133,40 @@ fn full_replay_requires_the_same_root_thread_turn_and_model() {
     assert_ne!(original, turn("key", "root", "other_turn", "model", false));
     assert_ne!(original, turn("key", "root", "turn", "other_model", false));
     assert!(turn("key", "child", "turn", "model", false).is_none());
+}
+
+#[test]
+fn disabling_replay_keeps_session_identity_and_migration_protection() {
+    let body = br#"{"model":"test-model","previous_response_id":"resp_A","client_metadata":{"session_id":"root","thread_id":"root","turn_id":"turn"}}"#;
+    let mut expected = identify("key", &[], body).unwrap();
+    assert!(expected.replay_turn.take().is_some());
+    assert_eq!(identify_request("key", &[], body, false), Some(expected));
+}
+
+#[test]
+fn full_replay_input_must_be_a_nonempty_recognized_array_without_references() {
+    for (input, can_replay, blocked_reason) in [
+        (r#"[{"type":"message","content":[]},{}]"#, true, None),
+        (
+            r#"[{},{"type":"item\u005freference"}]"#,
+            false,
+            Some("item_reference"),
+        ),
+        (r#"[{},false]"#, false, None),
+        ("[]", false, None),
+        (r#""text input""#, false, None),
+    ] {
+        let body = format!(
+            r#"{{"model":"test-model","client_metadata":{{"session_id":"root","thread_id":"root","turn_id":"turn"}},"input":{input}}}"#
+        );
+        let identity = identify("key", &[], body.as_bytes()).unwrap();
+        assert_eq!(
+            (
+                identity.replay_turn.is_some(),
+                identity.blocked_reason.as_deref()
+            ),
+            (can_replay, blocked_reason),
+            "输入为 {input}"
+        );
+    }
 }
