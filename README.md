@@ -6,7 +6,7 @@
 
 ## 安装
 
-要求 CPR **>=3.52.1**，发行包提供 Linux x86_64 版本，运行环境需 glibc >=2.34
+要求 CPR **>=3.56.0**，发行包提供 Linux x86_64 版本，运行环境需 glibc >=2.34
 
 1. 打开 CPR「插件管理」→「安装」→「GitHub」
 2. 仓库填写 `SilentFlower/cpr-session-failover`，选择稳定版附件
@@ -16,7 +16,9 @@
 
 也可以从 [Releases](https://github.com/SilentFlower/cpr-session-failover/releases) 下载 `.tar.gz` 上传安装。GitHub 自动生成的源码压缩包不是安装包
 
-插件命中的模型请求会使用请求级严格绑定，不改变全局设置。默认作用范围不限 Key，可在「高级设置」收窄到指定 Key、分组或模型；请求中间件、attempt 和账号调度须使用相同范围
+插件在带显式会话身份的原生 Responses 请求中启用请求级严格绑定，在 OpenAI 候选账号间调度。Chat Completions、Messages 和 GenAI 沿用宿主调度。默认作用范围覆盖所有 Key，可在「高级设置」收窄到指定 Key、分组或模型。请求中间件、attempt 和账号调度须使用相同范围
+
+CPR 3.56.1 上，非流式 HTTP Responses 请求搭配实际使用 WebSocket 的上游时，可能返回 HTTP 500。该场景可将 Responses API Key 账号的传输设为 HTTP。详见[验证记录](docs/validation.md)
 
 升级保留现有配置，已保存的 5 秒不会被覆盖。要采用 15 秒，在扩展页的「插件设置」中修改迁移等待阈值并保存
 
@@ -46,7 +48,7 @@
 
 带 `previous_response_id` 的增量请求固定在原账号。带 `item_reference` 的请求和预热也不参与跨号恢复
 
-在 CPR「插件管理」中为本实例启用 WebSocket 消息中间件，然后让 Codex 重新连接，可恢复根线程的原生续写排队超时。该阶段按宿主规则使用空范围，实际恢复仍受插件请求中间件和调度的适用范围约束
+在 CPR「插件管理」中为本实例启用 WebSocket 消息中间件，然后让 Codex 重新连接，可恢复根线程的原生续写排队超时。该阶段按宿主规则使用空范围，只接收原生 Responses 下行的排队超时错误。普通消息由宿主直接转发。恢复受请求中间件和调度的适用范围约束
 
 原账号在宿主排队时限内持续满载时，插件将发送前的 `concurrency_queue_timeout` 转成 `previous_response_not_found`，让支持该协议的客户端重发完整上下文。同一 Key、根线程、轮次和模型的重发在 30 秒内有一次优先选择备选账号的机会，由宿主取得租约并改绑。无可立即使用的备选账号时，重发交回宿主调度
 

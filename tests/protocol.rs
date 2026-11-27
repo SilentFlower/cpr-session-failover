@@ -43,7 +43,6 @@ struct Host {
     call_ids: HashMap<u64, u64>,
     next_call_id: u64,
     host_queue_failover: bool,
-    affinity_field: &'static str,
 }
 
 impl Host {
@@ -78,7 +77,6 @@ impl Host {
             call_ids: HashMap::new(),
             next_call_id: 1,
             host_queue_failover: true,
-            affinity_field: "account_affinity",
         };
         let manifest = Manifest::from_author_slice(include_bytes!("../plugin.json")).unwrap();
         host.send(
@@ -202,6 +200,9 @@ impl Host {
                 params,
             } => match method.as_str() {
                 "host.middleware.next" => {
+                    if params["body"] == "preserve" {
+                        assert!(frame.payload.is_empty());
+                    }
                     self.next.insert(self.logical_id(parent_id), (id, params));
                 }
                 "host.data.accounts.list" => {
@@ -397,9 +398,16 @@ impl Host {
         let settings = if attempt {
             Value::Null
         } else {
-            json!({"runtime":{(self.affinity_field):"preferred","max_waiting_per_account":10,"account_queue_timeout_seconds":20,"switch_account_on_queue_failure":self.host_queue_failover},"fast_mode":"default","client_limits":{},"timeout_ms":null})
+            json!({"runtime":{"account_affinity":"preferred","max_waiting_per_account":10,"account_queue_timeout_seconds":20,"switch_account_on_queue_failure":self.host_queue_failover},"fast_mode":"default","client_limits":{},"timeout_ms":null})
         };
-        let params = json!({"settings_sources":{},"settings":settings,"request_id":request,"client_key_id":"key_test","account_group_ids":[],"mount":if attempt {"attempt"} else {"request"},"attempt_index":if attempt {Some(1)} else {None},"operation":"generate","protocol":"openai","endpoint":"/v1/responses","transport":transport,"provider":if attempt {Some("openai")} else {None},"model":"test-model","account_id":if attempt {Some("B")} else {None},"headers":[]});
+        let mut params = json!({"settings_sources":{},"settings":settings,"request_id":request,"client_key_id":"key_test","account_group_ids":[],"mount":if attempt {"attempt"} else {"request"},"attempt_index":if attempt {Some(1)} else {None},"operation":"generate","protocol":"openai","endpoint":"/v1/responses","transport":transport,"provider":if attempt {Some("openai")} else {None},"model":"test-model","account_id":if attempt {Some("B")} else {None},"headers":[]});
+        // 省略正文的 attempt 只有元数据，原文仍由宿主持有
+        let payload = if attempt {
+            params["body_omitted"] = json!(true);
+            Vec::new()
+        } else {
+            body
+        };
         self.call(
             id,
             if attempt {
@@ -410,18 +418,18 @@ impl Host {
             "middleware.handle",
             Some(request),
             params,
-            body,
+            payload,
         )
         .await;
         self.wait_next(id).await;
+        let params = &self.next[&id].1;
+        assert_eq!(params["body"], "preserve");
         if !attempt {
-            let params = &self.next[&id].1;
-            assert_eq!(params["settings"]["runtime"][self.affinity_field], "strict");
+            assert_eq!(params["settings"]["runtime"]["account_affinity"], "strict");
             assert_eq!(
                 params["settings"]["runtime"]["switch_account_on_queue_failure"],
                 self.host_queue_failover
             );
-            assert_eq!(params["body"], "preserve");
             assert_eq!(params["header_mutations"], json!([]));
         }
     }
@@ -853,7 +861,25 @@ async fn large_request_preserves_original_body_and_response_stream() {
         "input": [{"type": "message", "role": "user", "content": "x".repeat(5 * 1024 * 1024)}],
     }))
     .unwrap();
+    host.call(
+        1,
+        Stage::Registration,
+        "plugin.register",
+        None,
+        json!({}),
+        vec![],
+    )
+    .await;
+    let registration = host.result(1).await.0;
+    let middleware = &registration["contributes"]["middleware"];
+    assert_eq!(middleware["omitBodyAt"], json!(["attempt"]));
+    assert_eq!(
+        middleware["websocketErrorCodes"],
+        json!(["concurrency_queue_timeout"])
+    );
     host.model_input(10, "req_large", false, body).await;
+    host.model(11, "req_large", true).await;
+    host.finish_next(11).await;
     host.finish_next(10).await;
     host.stop().await;
 }
@@ -873,14 +899,13 @@ async fn native_queue_timeout_prompts_one_full_replay_and_selects_the_backup() {
         serde_json::to_vec(&value).unwrap()
     };
     let account_a = json!({"account_id":"A","session_bound":true,"role":"follow_only","available":false,"weight":1,"in_flight":3,"maximum_concurrency":3});
-    for (offset, host_queue_failover, has_backup, affinity_field) in [
-        (0, true, true, "account_affinity"),
-        (30, true, false, "openai_account_affinity"),
-        (60, false, true, "openai_account_affinity"),
-        (90, false, false, "account_affinity"),
+    for (offset, host_queue_failover, has_backup) in [
+        (0, true, true),
+        (30, true, false),
+        (60, false, true),
+        (90, false, false),
     ] {
         host.host_queue_failover = host_queue_failover;
-        host.affinity_field = affinity_field;
         let request = format!("req_native_{offset}");
         let turn = format!("turn_{offset}");
         host.model_input_with_transport(
@@ -944,6 +969,9 @@ async fn native_queue_timeout_prompts_one_full_replay_and_selects_the_backup() {
             assert_eq!(decision["account_id"], "B");
             assert_eq!(host.record(&replay)["reason"], "native_queue_replay");
             assert_eq!(host.record(&replay)["originalAccountId"], "A");
+            host.model(21 + offset, &replay, true).await;
+            assert_eq!(host.record(&replay)["actualAccountId"], "B");
+            host.finish_next(21 + offset).await;
         } else {
             host.send_candidates(18 + offset, &replay, json!([account_a]))
                 .await;

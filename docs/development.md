@@ -1,6 +1,6 @@
 # 开发与构建
 
-Rust 仅通过公开 `gateway-plugin-sdk` 接入宿主，固定版本为 `38446e8a0c1745b59b4c7cc2407f3ff5ff3cd77a`，不链接宿主 Core、Store 或 Provider
+Rust 仅通过公开 `gateway-plugin-sdk` 接入宿主，固定到 CPR v3.56.1 的提交 `75d0d0e0f8792007d00459648dfd17655aa8a8c5`
 
 工具链为 Rust 1.99.1、Node.js 26.13.0 和 pnpm 12.6.0，`rust-toolchain.toml` 会选择 Rust 版本。页面使用 Vue 3 与固定发布包 `@codex-proxy/ui` v0.8.0，依赖和锁文件由 `frontend/` 管理
 
@@ -15,7 +15,7 @@ pnpm --dir frontend build
 
 ## 打包
 
-先准备与当前 SDK 合同一致的 `cpr-plugin` CLI，再执行：
+使用 CPR v3.56.1 源码构建的 `cpr-plugin` 执行以下打包命令
 
 ```bash
 CPR_PLUGIN_CLI=/path/to/cpr-plugin bash scripts/package.sh
@@ -56,7 +56,9 @@ CPR_PLUGIN_CLI=/path/to/cpr-plugin bash scripts/package.sh
 
 日志必须先持久化才能返回迁移决定。父调用取消时同步清除内存协调位置，不启动脱离父调用的回调；记录不确定时保留 `proposed` 或未知证据状态
 
-请求中间件只修改本次有效运行设置中的亲和模式，正文和头部原样交还 SDK，响应流继续使用宿主惰性正文与取消机制
+`request` 读取原文识别会话、续写和完整重发，只修改本次调用的亲和模式。`omitBodyAt: ["attempt"]` 让宿主保留正文，插件根据请求 ID、尝试序号和实际账号确认准入。`next` 在两个阶段都保留宿主原文。
+
+`websocketErrorCodes: ["concurrency_queue_timeout"]` 按进入中间件链时的错误码筛选。插件在 `next` 返回后仍核对错误帧、状态码和请求 ID，防止将其他请求或内层改写过的错误关联到本轮恢复
 
 ## 发布
 

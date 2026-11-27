@@ -1,12 +1,18 @@
 # 验证记录
 
-目标协议为 RPC v7、middleware v6、scheduler v4，宿主版本声明为 `>=3.52.1`
+0.4.8 要求 CPR `>=3.56.0`，使用清单 v2、RPC v7、middleware v6 和 scheduler v4。Rustfmt、严格 Clippy、35 项 Rust 测试、页面 ESLint、类型检查和生产构建通过。CPR v3.56.1 的 CLI 生成 Linux x86_64 安装包，归档和包内文件摘要均已核对，包内二进制通过全部 8 项 RPC 回归
 
-Rustfmt、严格 Clippy 与 32 个插件行为/RPC 测试通过，Linux x86_64 发行包由官方 CLI 生成
+最低版本 CPR 3.56.0 的官方 Linux 发行包通过安装预检、启用、四阶段绑定和历史查询。
 
-发行包内可执行文件通过同一套七项 RPC 验收，归档与包内文件摘要一致。页面 ESLint、类型检查、生产构建、Actionlint 和 Shell 语法检查通过，前端生产依赖审计未发现已知漏洞
+CPR 3.56.1 使用官方 Linux 发行包、独立 PostgreSQL、Redis 和回环模拟上游，验证了以下行为：
 
-CPR 3.55.2 隔离宿主验证了 0.4.5 到 0.4.6 的实例切换与等待阈值保留。指定会话首次绑定账号 A，A 满载后约 1.3 秒迁移到 B，A 释放后下一轮仍由 B 接收。HTTP、SSE 与原生 WebSocket 两轮续写通过
+- 从 0.4.7 切换至 0.4.8 后实例运行，原有的 1 秒阈值和阶段绑定保留
+- 一次原生续写恢复中，6 次 request 收到完整正文，5 次 attempt 均标记 `body_omitted` 且正文为 0 字节。只有排队超时触发一次下行 WebSocket RPC
+- 原生增量续写在原账号排队超时，模拟上游收到的下一次请求是同轮完整重发。备用账号接手，释放原账号后下一轮仍在备用账号续写，宿主诊断确认改绑
+- Codex CLI 0.172.0 在工具调用后收到恢复信号，自行重发包含工具结果的完整上下文，备用账号完成本轮
+- HTTP 上游的普通排队迁移经 HTTP JSON 和 SSE 验证，原账号释放后后续请求仍跟随备用账号
+
+**非流式 HTTP 与 WebSocket 上游的组合有交付风险。** 在 3.56.1 隔离宿主上，非流式 Responses 请求经 `prefer_websocket` 账号实际走 WebSocket，上游发送完成事件后客户端收到 HTTP 500 `invalid_upstream_response`。单独启用 0.4.7 或 0.4.8 都可复现。相同模拟上游在空宿主返回 200。启用插件并将账号传输设为 `http` 后，HTTP JSON 与 SSE 均通过
 
 本地检查覆盖以下行为：
 
@@ -43,4 +49,4 @@ CPR 3.41.0 官方 Linux 发行包配合隔离 PostgreSQL、Redis 完成真实安
 
 宿主现有账号容量与严格亲和合同测试使用本地 CPR 提交 `b9bcb4e0863c619c913b2ebe4cb3230600fd4bbf` 运行，覆盖显式选号、原账号等待、队列拒绝和候选过滤
 
-未使用真实上游账号验收 HTTP/SSE、WebSocket 及后续轮次，隔离实例验证不等于生产业务验收
+以上集成验收使用合成账号。真实上游与生产流量的 CPU 降幅待验证

@@ -97,10 +97,7 @@ impl App {
         let mut guard = None;
         if call.request.head.mount == MiddlewareMount::Request
             && call.request.head.protocol == "openai"
-            && matches!(
-                call.request.head.endpoint.as_str(),
-                "/v1/responses" | "/v1/chat/completions"
-            )
+            && call.request.head.endpoint == "/v1/responses"
             && let Some(mut identity) = identify_request(
                 &call.request.head.client_key_id,
                 &call.request.head.headers,
@@ -114,14 +111,8 @@ impl App {
                 .settings
                 .get_mut("runtime")
                 .ok_or_else(|| fault("宿主没有提供请求运行设置"))?;
-            // CPR 3.55 将亲和设置推广到多个平台，旧版宿主仍要求原字段名
-            let affinity_field = if runtime.get("account_affinity").is_some() {
-                "account_affinity"
-            } else {
-                "openai_account_affinity"
-            };
             let mode = runtime
-                .get_mut(affinity_field)
+                .get_mut("account_affinity")
                 .ok_or_else(|| fault("宿主缺少账号亲和设置"))?;
             // 只改本次模型调用，已有原生续写也按严格绑定复核，不能把会话拉回旧账号
             *mode = json!("strict");
@@ -134,7 +125,6 @@ impl App {
                     identity.blocked_reason = Some("account_queue_disabled".into());
                 } else if runtime
                     .get("account_queue_timeout_seconds")
-                    .or_else(|| runtime.get("concurrency_wait_timeout_seconds"))
                     .and_then(Value::as_u64)
                     .is_none_or(|seconds| seconds <= u64::from(self.config.wait_seconds))
                 {
